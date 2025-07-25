@@ -1,14 +1,14 @@
 # =====================================================================================
-# ||                  GODFATHER MOVIE BOT (Advanced Features Version)                ||
+# ||                  GODFATHER MOVIE BOT (Smart Search & Suggestions)               ||
 # ||---------------------------------------------------------------------------------||
-# || গ্রুপ সাপোর্ট, অটো-ডিলিট এবং উন্নত ক্যাপশন সহ চূড়ান্ত সংস্করণ।                     ||
+# || স্মার্ট সার্চ, সাজেশন সিস্টেম, গ্রুপ সাপোর্ট, অটো-ডিলিট সহ চূড়ান্ত সংস্করণ।      ||
 # =====================================================================================
 
 import os
 import re
 import base64
 import logging
-import asyncio # অটো-ডিলিটের জন্য asyncio ইম্পোর্ট করা হয়েছে
+import asyncio
 from dotenv import load_dotenv
 from threading import Thread
 
@@ -35,9 +35,9 @@ try:
     ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(',')]
     PORT = int(os.environ.get("PORT", 8080))
     BOT_USERNAME = os.environ.get("BOT_USERNAME")
-    DELETE_DELAY = 15 * 60 # ১৫ মিনিট (সেকেন্ডে)
+    DELETE_DELAY = 15 * 60
 except (ValueError, TypeError) as e:
-    LOGGER.critical(f"Configuration error: One or more environment variables are missing or invalid. Error: {e}")
+    LOGGER.critical(f"Configuration error: {e}")
     exit()
 
 # --- ধাপ ৩: ক্লায়েন্ট, ডাটাবেস এবং ওয়েব অ্যাপ ইনিশিয়ালাইজেশন ---
@@ -49,26 +49,19 @@ users = db["users"]
 channels = db["channels"]
 
 web_app = Flask(__name__)
-
 @web_app.route('/')
-def health_check():
-    return "Bot is alive!", 200
+def health_check(): return "Bot is alive!"
 
 # ========= 📄 হেল্পার ফাংশন ========= #
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
+def is_admin(user_id): return user_id in ADMIN_IDS
 
-async def delete_messages_after_delay(messages_to_delete, delay):
-    """নির্দিষ্ট সময় পর মেসেজগুলো ডিলিট করার জন্য একটি হেল্পার ফাংশন।"""
+async def delete_messages_after_delay(messages, delay):
     await asyncio.sleep(delay)
-    for msg in messages_to_delete:
-        try:
-            await msg.delete()
-        except (MessageNotModified, MessageIdInvalid):
-            LOGGER.warning(f"Message {msg.id} could not be deleted (might be already gone).")
-        except Exception as e:
-            LOGGER.error(f"Error deleting message {msg.id}: {e}")
+    for msg in messages:
+        try: await msg.delete()
+        except Exception as e: LOGGER.warning(f"Could not delete message {msg.id}: {e}")
 
+# ... (save_movie, start_handler, এবং অ্যাডমিন কমান্ডের কোড অপরিবর্তিত থাকবে) ...
 # ========= 📢 চ্যানেল থেকে স্বয়ংক্রিয় মুভি সেভ ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 async def save_movie(client, message):
@@ -111,31 +104,14 @@ async def start_handler(client, message):
 
             movie = movies.find_one({"_id": ObjectId(movie_id_str)})
             if movie:
-                # উন্নত ক্যাপশন তৈরি
-                final_caption = (
-                    f"🎬 **{movie['title']} ({movie['year']})**\n"
-                    f"🌐 **Language:** {movie['language']}\n\n"
-                    f"🙏 Thank you for using our bot!"
-                )
-                
-                # মুভি ফাইল পাঠানো
-                movie_msg = await client.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=movie['chat_id'],
-                    message_id=movie['msg_id'],
-                    caption=final_caption
-                )
-                
-                # সতর্কবার্তা পাঠানো
-                warning_msg = await message.reply_text(
-                    f"❗ **Important:** This file will be automatically deleted in **{DELETE_DELAY // 60} minutes** to save space.",
-                    quote=True
-                )
-                
-                # ব্যাকগ্রাউন্ডে ডিলিট টাস্ক চালু করা
+                final_caption = (f"🎬 **{movie['title']} ({movie['year']})**\n"
+                                 f"🌐 **Language:** {movie['language']}\n\n"
+                                 f"🙏 Thank you for using our bot!")
+                movie_msg = await client.copy_message(chat_id=user_id, from_chat_id=movie['chat_id'], message_id=movie['msg_id'], caption=final_caption)
+                warning_msg = await message.reply_text(f"❗ **Important:** This file will be automatically deleted in **{DELETE_DELAY // 60} minutes**.", quote=True)
                 asyncio.create_task(delete_messages_after_delay([movie_msg, warning_msg], DELETE_DELAY))
             else:
-                await message.reply_text("❌ Sorry, the movie could not be found. It might have been removed.")
+                await message.reply_text("❌ Sorry, the movie could not be found.")
         except Exception as e:
             LOGGER.error(f"Deep link error for user {user_id}: {e}")
             await message.reply_text("🤔 Invalid or expired verification link.")
@@ -150,44 +126,99 @@ async def stats_command(_, message):
     total_channels = channels.count_documents({})
     await message.reply_text(f"📊 **Bot Statistics**\n\n👥 Total Users: `{total_users}`\n🎬 Total Movies: `{total_movies}`\n📢 Authorized Channels: `{total_channels}`")
 
-# ... (অন্যান্য অ্যাডমিন কমান্ডগুলো এখানে async await সহ যোগ করতে পারেন)
+# ... (অন্যান্য অ্যাডমিন কমান্ডগুলো অপরিবর্তিত) ...
 
-# ========= 🔎 মুভি সার্চ (প্রাইভেট এবং গ্রুপ) ========= #
+
+# ========= 🔎 স্মার্ট সার্চ এবং সাজেশন সিস্টেম (সম্পূর্ণ নতুন) ========= #
 @app.on_message((filters.private | filters.group) & filters.text & ~filters.command())
-async def search_movie(client, message):
+async def smart_search_movie(client, message):
     query = message.text.strip()
-    result = movies.find_one({"title": {"$regex": query, "$options": "i"}})
     
-    if result:
-        movie_id = str(result['_id'])
+    # Atlas Search ব্যবহার করে কোয়েরি চালানো
+    pipeline = [
+        {
+            '$search': {
+                'index': 'default', # আমরা যে ইনডেক্সটি তৈরি করেছি
+                'autocomplete': {
+                    'query': query,
+                    'path': 'title',
+                    'fuzzy': { 'maxEdits': 2, 'prefixLength': 3 }
+                }
+            }
+        },
+        { '$limit': 5 } # সর্বোচ্চ ৫টি সাজেশন দেখানো হবে
+    ]
+    results = list(movies.aggregate(pipeline))
+
+    if not results:
+        if message.chat.type == filters.ChatType.PRIVATE:
+            await message.reply_text("❌ **Movie Not Found!**\n\nPlease check your spelling or try a different name.")
+        return
+
+    # যদি একটি মাত্র ফলাফল পাওয়া যায় এবং সেটি হুবহু মিলে যায়
+    if len(results) == 1 and results[0]['title'].lower() == query.lower():
+        movie = results[0]
+        movie_id = str(movie['_id'])
         user_id = message.from_user.id
-        encoded_data = base64.urlsafe_b64encode(f'{movie_id}-{user_id}'.encode()).decode()
-        verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
+        encoded_data = base64.urlsafe_b64encode(f'get_{movie_id}-{user_id}'.encode()).decode()
+        # এখানে 'get_' প্রিফিক্স ব্যবহার করা হয়েছে যাতে সাধারণ স্টার্ট কমান্ডের সাথে কনফ্লিক্ট না হয়
+        verification_url = f"https://t.me/{BOT_USERNAME}?start={encoded_data}"
         
-        # বাটনের লেখা পরিবর্তন করা হয়েছে
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ ডাউনলোড নাও", url=verification_url)]])
-        
         await message.reply_text(
-            f"🎬 **{result['title']} ({result['year']})**\n"
-            f"🌐 **Language:** {result['language']}\n\n"
-            "➡️ মুভিটি পেতে নিচের বাটনে ক্লিক করে ভেরিফাই করুন।",
+            f"🎬 **{movie['title']} ({movie['year']})**\n"
+            f"🌐 **Language:** {movie['language']}\n\n"
+            "➡️ মুভিটি পেতে নিচের বাটনে ক্লিক করুন।",
             reply_markup=btn,
             disable_web_page_preview=True,
             quote=True
         )
-    # গ্রুপে মুভি না পাওয়া গেলে কোনো রিপ্লাই দেবে না, শুধু প্রাইভেট চ্যাটে দেবে
-    elif message.chat.type == filters.ChatType.PRIVATE:
-        await message.reply_text("❌ **Movie Not Found!**\n\nPlease check the spelling or try another name.")
+    else:
+        # একাধিক ফলাফল বা ভুল বানানের জন্য সাজেশন দেখানো
+        buttons = []
+        for movie in results:
+            movie_id = str(movie['_id'])
+            # কলব্যাক ডেটায় মুভির আইডি পাঠানো হচ্ছে
+            buttons.append([InlineKeyboardButton(f"🎬 {movie['title']} ({movie['year']})", callback_data=f"suggest_{movie_id}")])
+        
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await message.reply_text("🤔 Did you mean one of these?", reply_markup=reply_markup, quote=True)
+
+# ========= 👆 সাজেশন বাটনের জন্য কলব্যাক হ্যান্ডলার (নতুন) ========= #
+@app.on_callback_query(filters.regex(r"^suggest_"))
+async def suggestion_callback(client, callback_query):
+    movie_id = callback_query.data.split("_")[1]
+    movie = movies.find_one({"_id": ObjectId(movie_id)})
+
+    if not movie:
+        await callback_query.answer("Sorry, this movie is no longer available.", show_alert=True)
+        return
+
+    # আগের মেসেজটি এডিট করে ডাউনলোড বাটন দেখানো হচ্ছে
+    user_id = callback_query.from_user.id
+    encoded_data = base64.urlsafe_b64encode(f'get_{movie_id}-{user_id}'.encode()).decode()
+    verification_url = f"https://t.me/{BOT_USERNAME}?start={encoded_data}"
+    
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ ডাউনলোড নাও", url=verification_url)]])
+    await callback_query.message.edit_text(
+        f"🎬 **{movie['title']} ({movie['year']})**\n"
+        f"🌐 **Language:** {movie['language']}\n\n"
+        "➡️ মুভিটি পেতে নিচের বাটনে ক্লিক করুন।",
+        reply_markup=btn,
+        disable_web_page_preview=True
+    )
+    await callback_query.answer()
+
 
 # ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
 def run_web_server():
     web_app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    LOGGER.info("Starting web server for health checks on a background thread...")
+    LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server)
     web_thread.start()
     
-    LOGGER.info("The Don is waking up... Starting Pyrogram client on the main thread.")
+    LOGGER.info("The Don is waking up...")
     app.run()
-    LOGGER.info("The Don is resting... Bot has stopped.")
+    LOGGER.info("The Don is resting...")
