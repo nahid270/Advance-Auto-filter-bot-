@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||                            GODFATHER MOVIE BOT (Final Version for bot.py)       ||
+# ||                            GODFATHER MOVIE BOT (Final Corrected Version)        ||
 # ||---------------------------------------------------------------------------------||
-# || এই বটটি Render.com-এ 'python bot.py' কমান্ড দিয়ে চালানোর জন্য অপ্টিমাইজড।        ||
+# || TypeError সমাধানের পর এটি চূড়ান্ত কোড, 'python bot.py' দিয়ে চালানোর জন্য প্রস্তুত।  ||
 # =====================================================================================
 
 import os
@@ -48,7 +48,6 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def health_check():
-    """Render.com-এর হেলথ চেক পাস করার জন্য এই এন্ডপয়েন্টটি জরুরি।"""
     return "Bot is alive!", 200
 
 # ========= 📄 হেল্পার ফাংশন ========= #
@@ -61,30 +60,21 @@ def save_movie(client, message):
     channel_id = message.chat.id
     if not channels.find_one({"_id": channel_id}):
         return
-
     text_to_parse = message.caption or ""
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", text_to_parse)
     if not title_match:
         LOGGER.warning(f"Could not parse title from message {message.id} in channel {channel_id}")
         return
-
     title = re.sub(r'[\.\_]', ' ', title_match.group(1).strip())
     year = title_match.group(2)
-    
     languages = ["Hindi", "Bangla", "English", "Tamil", "Telugu", "Malayalam", "Kannada"]
     language = "Unknown"
     for lang in languages:
         if lang.lower() in text_to_parse.lower():
             language = lang
             break
-
     file_id = message.video.file_id if message.video else message.document.file_id
-
-    data = {
-        "title": title, "year": year, "language": language,
-        "file_id": file_id, "chat_id": message.chat.id, "msg_id": message.id,
-    }
-
+    data = { "title": title, "year": year, "language": language, "file_id": file_id, "chat_id": message.chat.id, "msg_id": message.id, }
     if not movies.find_one({"title": title, "year": year}):
         movies.insert_one(data)
         LOGGER.info(f"✅ Movie Saved: {title} ({year}) from channel {channel_id}")
@@ -96,22 +86,16 @@ def start_handler(client, message):
     if not users.find_one({"_id": user_id}):
         users.insert_one({"_id": user_id, "name": message.from_user.first_name})
         LOGGER.info(f"New user saved: {user_id}")
-
     if len(message.command) > 1:
         try:
             payload = message.command[1]
             decoded_data = base64.urlsafe_b64decode(payload).decode()
             movie_id_str, verified_user_id_str = decoded_data.split('-')
-
             if user_id != int(verified_user_id_str):
                 return message.reply_text("😡 **Verification Failed!** This link was not generated for you.")
-
             movie = movies.find_one({"_id": ObjectId(movie_id_str)})
             if movie:
-                client.copy_message(
-                    chat_id=user_id, from_chat_id=movie['chat_id'], message_id=movie['msg_id'],
-                    caption=f"✅ **Verification Successful!**\n\n🎬 **{movie['title']} ({movie['year']})**\n\nThank you for using our bot!"
-                )
+                client.copy_message( chat_id=user_id, from_chat_id=movie['chat_id'], message_id=movie['msg_id'], caption=f"✅ **Verification Successful!**\n\n🎬 **{movie['title']} ({movie['year']})**\n\nThank you for using our bot!")
             else:
                 message.reply_text("❌ Sorry, the movie could not be found. It might have been removed.")
         except Exception as e:
@@ -126,12 +110,7 @@ def stats_command(_, message):
     total_users = users.count_documents({})
     total_movies = movies.count_documents({})
     total_channels = channels.count_documents({})
-    message.reply_text(
-        f"📊 **Bot Statistics**\n\n"
-        f"👥 Total Users: `{total_users}`\n"
-        f"🎬 Total Movies: `{total_movies}`\n"
-        f"📢 Authorized Channels: `{total_channels}`"
-    )
+    message.reply_text(f"📊 **Bot Statistics**\n\n👥 Total Users: `{total_users}`\n🎬 Total Movies: `{total_movies}`\n📢 Authorized Channels: `{total_channels}`")
 
 @app.on_message(filters.command("addchannel") & filters.create(lambda _, __, m: is_admin(m.from_user.id)))
 def add_channel_command(_, message):
@@ -139,7 +118,6 @@ def add_channel_command(_, message):
         channel_id = int(message.text.split(None, 1)[1])
         if channel_id > -1000000000000:
             return message.reply("❌ Invalid Channel ID. It must be a 13-digit negative number (e.g., -100xxxxxxxxxx).")
-        
         if channels.find_one({"_id": channel_id}):
             message.reply("⚠️ This channel is already authorized.")
         else:
@@ -165,38 +143,31 @@ def list_channels_command(_, message):
     all_channels = list(channels.find({}))
     if not all_channels:
         return message.reply("No channels have been authorized yet.")
-    
     text = "📄 **Authorized Channels:**\n\n"
     for channel in all_channels:
         text += f"• `{channel['_id']}`\n"
     message.reply(text)
 
 # ========= 🔎 মুভি সার্চ (সর্বশেষ প্রায়োরিটি) ========= #
-@app.on_message(filters.private & filters.text & ~filters.command())
+# *** এখানেই পরিবর্তনটি করা হয়েছে: ~filters.command() এর বদলে ~filters.command ***
+@app.on_message(filters.private & filters.text & ~filters.command)
 def search_movie(client, message):
     query = message.text.strip()
     result = movies.find_one({"title": {"$regex": query, "$options": "i"}})
-    
     if result:
         movie_id = str(result['_id'])
         user_id = message.from_user.id
         encoded_data = base64.urlsafe_b64encode(f'{movie_id}-{user_id}'.encode()).decode()
         verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
-        
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏳ Please Verify to Watch", url=verification_url)]])
         message.reply_text(
-            f"🎬 **{result['title']} ({result['year']})**\n"
-            f"🌐 Language: {result['language']}\n\n"
-            "➡️ To get the movie, please click the button below and verify.",
-            reply_markup=btn,
-            disable_web_page_preview=True
-        )
+            f"🎬 **{result['title']} ({result['year']})**\n🌐 Language: {result['language']}\n\n➡️ To get the movie, please click the button below and verify.",
+            reply_markup=btn, disable_web_page_preview=True)
     else:
         message.reply_text("❌ **Movie Not Found!**\n\nPlease check the spelling or try another name.")
 
 # ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
 def run_web_server():
-    """Flask ওয়েব সার্ভারটি চালানোর জন্য ফাংশন।"""
     web_app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
