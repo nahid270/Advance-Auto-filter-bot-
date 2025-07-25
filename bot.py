@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||                  GODFATHER MOVIE BOT (Multi-Quality Support)                    ||
+# ||                  GODFATHER MOVIE BOT (Multi-Quality & Final Fix)                ||
 # ||---------------------------------------------------------------------------------||
-# || একাধিক কোয়ালিটি, স্মার্ট সার্চ, এবং অটো-ডিলিট সহ চূড়ান্ত সংস্করণ।               ||
+# || TypeError সমাধানের পর এটি চূড়ান্ত সংস্করণ।                                        ||
 # =====================================================================================
 
 import os
@@ -37,8 +37,8 @@ except (ValueError, TypeError) as e:
 app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["MovieDB"]
-movie_info_db = db["movie_info"] # নতুন কালেকশন
-files_db = db["files"]           # নতুন কালেকশন
+movie_info_db = db["movie_info"]
+files_db = db["files"]
 users_db = db["users"]
 channels_db = db["channels"]
 
@@ -55,7 +55,7 @@ async def delete_messages_after_delay(messages, delay):
         try: await msg.delete()
         except Exception as e: LOGGER.warning(f"Could not delete message {msg.id}: {e}")
 
-# ========= 📢 চ্যানেল থেকে মুভি সেভ (সম্পূর্ণ নতুন লজিক) ========= #
+# ========= 📢 চ্যানেল থেকে মুভি সেভ ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 async def save_movie_quality(client, message):
     if not channels_db.find_one({"_id": message.chat.id}): return
@@ -67,9 +67,8 @@ async def save_movie_quality(client, message):
 
     title = re.sub(r'[\.\_]', ' ', title_match.group(1).strip())
     year = title_match.group(2)
-    search_title = f"{title.lower()} {year}" # সার্চের জন্য পরিষ্কার নাম
+    search_title = f"{title.lower()} {year}"
 
-    # মুভির কোয়ালিটি এবং ভাষা বের করা
     quality = "Unknown"
     qualities = ["480p", "720p", "1080p", "2160p", "4K"]
     for q in qualities:
@@ -80,7 +79,6 @@ async def save_movie_quality(client, message):
     for lang in languages:
         if lang.lower() in caption.lower(): language = lang; break
     
-    # movie_info কালেকশনে মুভির তথ্য খোঁজা বা তৈরি করা
     movie_doc = movie_info_db.find_one_and_update(
         {"search_title": search_title},
         {"$setOnInsert": {"title": title, "year": year, "search_title": search_title}},
@@ -88,18 +86,16 @@ async def save_movie_quality(client, message):
     )
     movie_id = movie_doc['_id']
 
-    # files কালেকশনে এই কোয়ালিটির ফাইল যোগ করা
     files_db.update_one(
         {"movie_id": movie_id, "quality": quality, "language": language},
         {"$set": {
             "file_id": message.video.file_id if message.video else message.document.file_id,
             "chat_id": message.chat.id, "msg_id": message.id
-        }},
-        upsert=True
+        }}, upsert=True
     )
     LOGGER.info(f"✅ Saved/Updated: {title} ({year}) [{quality} - {language}]")
 
-# ========= 🎬 স্টার্ট কমান্ড এবং ভেরিফিকেশন হ্যান্ডলার (আপডেটেড) ========= #
+# ========= 🎬 স্টার্ট কমান্ড এবং ভেরিফিকেশন হ্যান্ডলার ========= #
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
     user_id = message.from_user.id
@@ -113,9 +109,9 @@ async def start_handler(client, message):
             action, data_id, verified_user_id_str = decoded_data.split('_')
 
             if user_id != int(verified_user_id_str):
-                return await message.reply_text("😡 **Verification Failed!** This link was not generated for you.")
+                return await message.reply_text("😡 **Verification Failed!**")
 
-            if action == "file": # যদি একটি নির্দিষ্ট ফাইল ডাউনলোড করার অনুরোধ আসে
+            if action == "file":
                 file_doc = files_db.find_one({"_id": ObjectId(data_id)})
                 if file_doc:
                     movie_doc = movie_info_db.find_one({"_id": file_doc['movie_id']})
@@ -134,9 +130,18 @@ async def start_handler(client, message):
     else:
         await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nI am a movie search bot.")
 
-# ========= 🔎 স্মার্ট সার্চ (সম্পূর্ণ নতুন লজিক) ========= #
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command())
+# ========= 🛠️ অ্যাডমিন কমান্ডস ========= #
+# ... (আপনার অ্যাডমিন কমান্ডগুলো এখানে অপরিবর্তিত থাকবে) ...
+
+
+# ========= 🔎 স্মার্ট সার্চ (ত্রুটি সমাধান করা হয়েছে) ========= #
+# *** এখানে ~filters.command() অংশটি পুরোপুরি বাদ দেওয়া হয়েছে ***
+@app.on_message((filters.private | filters.group) & filters.text)
 async def smart_search_handler(client, message):
+    # বট থেকে আসা মেসেজ উপেক্ষা করা
+    if message.from_user.is_bot:
+        return
+        
     query = message.text.strip()
     pipeline = [{'$search': {'index': 'default', 'autocomplete': {'query': query, 'path': 'search_title'}}}, {'$limit': 5}]
     results = list(movie_info_db.aggregate(pipeline))
@@ -152,7 +157,7 @@ async def smart_search_handler(client, message):
         buttons = [[InlineKeyboardButton(f"🎬 {movie['title']} ({movie['year']})", callback_data=f"showqual_{movie['_id']}")] for movie in results]
         await message.reply_text("🤔 Did you mean one of these?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
 
-# ========= 👆 কলব্যাক হ্যান্ডলার (সম্পূর্ণ নতুন লজিক) ========= #
+# ========= 👆 কলব্যাক হ্যান্ডলার ========= #
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     data = callback_query.data
@@ -174,7 +179,6 @@ async def callback_handler(client, callback_query):
         await callback_query.answer("Please verify to get the file.", show_alert=True)
 
 async def show_quality_options(message, movie_id, is_edit=False):
-    """মুভির বিভিন্ন কোয়ালিটি দেখানোর জন্য একটি হেল্পার ফাংশন"""
     files = list(files_db.find({"movie_id": movie_id}))
     if not files:
         await message.reply_text("Sorry, no files found for this movie.")
@@ -184,13 +188,15 @@ async def show_quality_options(message, movie_id, is_edit=False):
     buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
     text = f"🎬 **{movie['title']} ({movie['year']})**\n\n👇 Please select your desired quality:"
 
-    if is_edit:
-        await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+    try:
+        if is_edit:
+            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+    except Exception as e:
+        LOGGER.error(f"Error in show_quality_options: {e}")
 
-
-# ... (অ্যাডমিন কমান্ড ও ওয়েব সার্ভার চালু করার কোড অপরিবর্তিত) ...
+# ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
 def run_web_server():
     web_app.run(host='0.0.0.0', port=PORT)
 
@@ -198,6 +204,7 @@ if __name__ == "__main__":
     LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server)
     web_thread.start()
+    
     LOGGER.info("The Don is waking up...")
     app.run()
     LOGGER.info("The Don is resting...")
