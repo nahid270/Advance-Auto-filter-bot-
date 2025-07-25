@@ -1,8 +1,7 @@
 # =====================================================================================
-# ||                            GODFATHER MOVIE BOT (Final Version)                  ||
+# ||                            GODFATHER MOVIE BOT (Final Version for bot.py)       ||
 # ||---------------------------------------------------------------------------------||
-# || এই বটটি একটি স্বয়ংক্রিয় মুভি ম্যানেজমেন্ট এবং ডেলিভারি সিস্টেম।                    ||
-# || এটি ওয়েব সার্ভারে ডিপ্লয় করার জন্য সম্পূর্ণ অপ্টিমাইজড এবং সমস্ত বাগ ফিক্সড।        ||
+# || এই বটটি Render.com-এ 'python bot.py' কমান্ড দিয়ে চালানোর জন্য অপ্টিমাইজড।        ||
 # =====================================================================================
 
 import os
@@ -49,11 +48,11 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def health_check():
-    return "Bot is alive and kicking!", 200
+    """Render.com-এর হেলথ চেক পাস করার জন্য এই এন্ডপয়েন্টটি জরুরি।"""
+    return "Bot is alive!", 200
 
 # ========= 📄 হেল্পার ফাংশন ========= #
 def is_admin(user_id):
-    """চেক করে ইউজার অ্যাডমিন কি না"""
     return user_id in ADMIN_IDS
 
 # ========= 📢 চ্যানেল থেকে স্বয়ংক্রিয় মুভি সেভ ========= #
@@ -176,8 +175,7 @@ def list_channels_command(_, message):
 @app.on_message(filters.private & filters.text & ~filters.command())
 def search_movie(client, message):
     query = message.text.strip()
-    # ডাটাবেসে কেস-ইনসেনসিটিভ সার্চ
-    result = movies.find_one({"title": {"$regex": f"^{re.escape(query)}$", "$options": "i"}})
+    result = movies.find_one({"title": {"$regex": query, "$options": "i"}})
     
     if result:
         movie_id = str(result['_id'])
@@ -202,10 +200,10 @@ def run_web_server():
     web_app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    LOGGER.info("Starting web server for health checks...")
+    LOGGER.info("Starting web server for health checks on a background thread...")
     web_thread = Thread(target=run_web_server)
     web_thread.start()
     
-    LOGGER.info("The Don is waking up... Bot is starting...")
+    LOGGER.info("The Don is waking up... Starting Pyrogram client on the main thread.")
     app.run()
     LOGGER.info("The Don is resting... Bot has stopped.")
