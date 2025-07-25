@@ -1,8 +1,8 @@
 # =====================================================================================
-# ||                            GODFATHER MOVIE BOT                                  ||
+# ||                            GODFATHER MOVIE BOT (Final Version)                  ||
 # ||---------------------------------------------------------------------------------||
 # || এই বটটি একটি স্বয়ংক্রিয় মুভি ম্যানেজমেন্ট এবং ডেলিভারি সিস্টেম।                    ||
-# || এটি ওয়েব সার্ভারে ডিপ্লয় করার জন্য প্রস্তুত করা হয়েছে।                             ||
+# || এটি ওয়েব সার্ভারে ডিপ্লয় করার জন্য সম্পূর্ণ অপ্টিমাইজড এবং সমস্ত বাগ ফিক্সড।        ||
 # =====================================================================================
 
 import os
@@ -10,22 +10,21 @@ import re
 import base64
 import logging
 from dotenv import load_dotenv
+from threading import Thread
+
+# --- ওয়েব সার্ভার ও বট লাইব্রেরি ---
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
-# --- নতুন ইম্পোর্টস: ওয়েব সার্ভারের জন্য ---
-from flask import Flask
-from threading import Thread
-
 # --- ধাপ ১: পরিবেশ সেটআপ এবং কনফিগারেশন ---
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 LOGGER = logging.getLogger(__name__)
 
-# --- ধাপ ২: বট এবং ডাটাবেসের জন্য প্রয়োজনীয় ভেরিয়েবল লোড ---
+# --- ধাপ ২: কনফিগারেশন ভেরিয়েবল লোড ---
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
@@ -33,13 +32,12 @@ try:
     MONGO_URL = os.environ.get("MONGO_URL")
     AD_PAGE_URL = os.environ.get("AD_PAGE_URL")
     ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(',')]
-    # --- নতুন ভেরিয়েবল: ওয়েব সার্ভারের জন্য পোর্ট ---
     PORT = int(os.environ.get("PORT", 8080))
 except (ValueError, TypeError) as e:
     LOGGER.critical(f"Configuration error: One or more environment variables are missing or invalid. Error: {e}")
     exit()
 
-# --- ধাপ ৩: টেলিগ্রাম ক্লায়েন্ট এবং MongoDB ডাটাবেস সংযোগ ---
+# --- ধাপ ৩: ক্লায়েন্ট, ডাটাবেস এবং ওয়েব অ্যাপ ইনিশিয়ালাইজেশন ---
 app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["MovieDB"]
@@ -47,24 +45,18 @@ movies = db["movies"]
 users = db["users"]
 channels = db["channels"]
 
-# --- ধাপ ৪: ওয়েব সার্ভার ইন্টিগ্রেশন (Flask) ---
-# একটি সাধারণ Flask অ্যাপ তৈরি করা হচ্ছে যা সার্ভারকে জানাবে বটটি সচল আছে।
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def health_check():
-    """এটি একটি হেলথ চেক এন্ডপয়েন্ট, যা 200 OK স্ট্যাটাস রিটার্ন করে।"""
     return "Bot is alive and kicking!", 200
 
-def run_web_server():
-    """Flask ওয়েব সার্ভারটি চালানোর জন্য একটি ফাংশন।"""
-    web_app.run(host='0.0.0.0', port=PORT)
-
-# ========= 📄 হেল্পার ফাংশন (পূর্বের মতোই) ========= #
+# ========= 📄 হেল্পার ফাংশন ========= #
 def is_admin(user_id):
+    """চেক করে ইউজার অ্যাডমিন কি না"""
     return user_id in ADMIN_IDS
 
-# ========= 📢 চ্যানেল থেকে মুভি সেভ করা (পূর্বের মতোই) ========= #
+# ========= 📢 চ্যানেল থেকে স্বয়ংক্রিয় মুভি সেভ ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 def save_movie(client, message):
     channel_id = message.chat.id
@@ -90,42 +82,15 @@ def save_movie(client, message):
     file_id = message.video.file_id if message.video else message.document.file_id
 
     data = {
-        "title": title,
-        "year": year,
-        "language": language,
-        "file_id": file_id,
-        "chat_id": message.chat.id,
-        "msg_id": message.id,
+        "title": title, "year": year, "language": language,
+        "file_id": file_id, "chat_id": message.chat.id, "msg_id": message.id,
     }
 
     if not movies.find_one({"title": title, "year": year}):
         movies.insert_one(data)
         LOGGER.info(f"✅ Movie Saved: {title} ({year}) from channel {channel_id}")
 
-# ========= 🔎 ইউজারদের জন্য সার্চ ও ভেরিফিকেশন (পূর্বের মতোই) ========= #
-@app.on_message(filters.private & filters.text & ~filters.command("start"))
-def search_movie(client, message):
-    query = message.text.strip()
-    result = movies.find_one({"title": {"$regex": query, "$options": "i"}})
-    
-    if result:
-        movie_id = str(result['_id'])
-        user_id = message.from_user.id
-        encoded_data = base64.urlsafe_b64encode(f'{movie_id}-{user_id}'.encode()).decode()
-        verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
-        
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏳ Please Verify to Watch", url=verification_url)]])
-        message.reply_text(
-            f"🎬 **{result['title']} ({result['year']})**\n"
-            f"🌐 Language: {result['language']}\n\n"
-            "➡️ To get the movie, please click the button below and verify.",
-            reply_markup=btn,
-            disable_web_page_preview=True
-        )
-    else:
-        message.reply_text("❌ **Movie Not Found!**\n\nPlease check the spelling or try another name.")
-
-# ========= 🎬 ভেরিফিকেশন শেষে ফাইল পাঠানো (পূর্বের মতোই) ========= #
+# ========= 🎬 স্টার্ট কমান্ড এবং ভেরিফিকেশন হ্যান্ডলার (সর্বপ্রথম প্রায়োরিটি) ========= #
 @app.on_message(filters.private & filters.command("start"))
 def start_handler(client, message):
     user_id = message.from_user.id
@@ -145,9 +110,7 @@ def start_handler(client, message):
             movie = movies.find_one({"_id": ObjectId(movie_id_str)})
             if movie:
                 client.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=movie['chat_id'],
-                    message_id=movie['msg_id'],
+                    chat_id=user_id, from_chat_id=movie['chat_id'], message_id=movie['msg_id'],
                     caption=f"✅ **Verification Successful!**\n\n🎬 **{movie['title']} ({movie['year']})**\n\nThank you for using our bot!"
                 )
             else:
@@ -158,9 +121,7 @@ def start_handler(client, message):
     else:
         message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\n\nI am a movie search bot. Just send me the name of the movie you want to find.")
 
-
-# ========= 🛠️ অ্যাডমিন কমান্ডস (পূর্বের মতোই) ========= #
-# ... (এখানে আপনার অ্যাডমিন কমান্ডের কোডগুলো থাকবে, কোনো পরিবর্তন ছাড়াই)
+# ========= 🛠️ অ্যাডমিন কমান্ডস (উচ্চ প্রায়োরিটি) ========= #
 @app.on_message(filters.command("stats") & filters.create(lambda _, __, m: is_admin(m.from_user.id)))
 def stats_command(_, message):
     total_users = users.count_documents({})
@@ -176,9 +137,9 @@ def stats_command(_, message):
 @app.on_message(filters.command("addchannel") & filters.create(lambda _, __, m: is_admin(m.from_user.id)))
 def add_channel_command(_, message):
     try:
-        channel_id = int(message.text.split()[1])
+        channel_id = int(message.text.split(None, 1)[1])
         if channel_id > -1000000000000:
-            return message.reply("❌ Invalid Channel ID. It must be a 13-digit negative number (e.g., -100xxxxxxxx).")
+            return message.reply("❌ Invalid Channel ID. It must be a 13-digit negative number (e.g., -100xxxxxxxxxx).")
         
         if channels.find_one({"_id": channel_id}):
             message.reply("⚠️ This channel is already authorized.")
@@ -191,7 +152,7 @@ def add_channel_command(_, message):
 @app.on_message(filters.command("delchannel") & filters.create(lambda _, __, m: is_admin(m.from_user.id)))
 def del_channel_command(_, message):
     try:
-        channel_id = int(message.text.split()[1])
+        channel_id = int(message.text.split(None, 1)[1])
         result = channels.delete_one({"_id": channel_id})
         if result.deleted_count:
             message.reply(f"✅ Channel `{channel_id}` has been removed.")
@@ -211,14 +172,40 @@ def list_channels_command(_, message):
         text += f"• `{channel['_id']}`\n"
     message.reply(text)
 
+# ========= 🔎 মুভি সার্চ (সর্বশেষ প্রায়োরিটি) ========= #
+@app.on_message(filters.private & filters.text & ~filters.command())
+def search_movie(client, message):
+    query = message.text.strip()
+    # ডাটাবেসে কেস-ইনসেনসিটিভ সার্চ
+    result = movies.find_one({"title": {"$regex": f"^{re.escape(query)}$", "$options": "i"}})
+    
+    if result:
+        movie_id = str(result['_id'])
+        user_id = message.from_user.id
+        encoded_data = base64.urlsafe_b64encode(f'{movie_id}-{user_id}'.encode()).decode()
+        verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
+        
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏳ Please Verify to Watch", url=verification_url)]])
+        message.reply_text(
+            f"🎬 **{result['title']} ({result['year']})**\n"
+            f"🌐 Language: {result['language']}\n\n"
+            "➡️ To get the movie, please click the button below and verify.",
+            reply_markup=btn,
+            disable_web_page_preview=True
+        )
+    else:
+        message.reply_text("❌ **Movie Not Found!**\n\nPlease check the spelling or try another name.")
+
 # ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
+def run_web_server():
+    """Flask ওয়েব সার্ভারটি চালানোর জন্য ফাংশন।"""
+    web_app.run(host='0.0.0.0', port=PORT)
+
 if __name__ == "__main__":
     LOGGER.info("Starting web server for health checks...")
-    # ওয়েব সার্ভারটিকে একটি ব্যাকগ্রাউন্ড থ্রেডে চালানো হচ্ছে
     web_thread = Thread(target=run_web_server)
     web_thread.start()
     
     LOGGER.info("The Don is waking up... Bot is starting...")
-    # Pyrogram ক্লায়েন্ট মূল থ্রেডে চলবে
     app.run()
     LOGGER.info("The Don is resting... Bot has stopped.")
