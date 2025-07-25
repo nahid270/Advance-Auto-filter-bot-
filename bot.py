@@ -1,5 +1,5 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v4.4 - Final with Smart Search)                     ||
+# ||      GODFATHER MOVIE BOT (v4.5 - Final with Error Fix)                        ||
 # ||---------------------------------------------------------------------------------||
 # || এই সংস্করণে গ্রুপ ও প্রাইভেট চ্যাটের সমস্ত মেসেজ অটো-ডিলিট করা হবে।            ||
 # || গ্রুপে সার্চ করে মুভি না পেলে বট চুপ থাকবে এবং প্রাইভেটে রিপ্লাই দেবে।        ||
@@ -237,7 +237,7 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
         return None
 
 # ========= 🔎 চূড়ান্ত Regex সার্চ হ্যান্ডলার (গ্রুপে সাইলেন্ট, প্রাইভেটে রেসপন্সিভ) ========= #
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command())
+@app.on_message((filters.private | filters.group) & filters.text & ~filters.command) # <<<--- এখানে সংশোধন করা হয়েছে
 async def reliable_search_handler(client, message):
     if message.from_user.is_bot: return
 
@@ -266,7 +266,6 @@ async def reliable_search_handler(client, message):
         return
 
     if not results:
-        # ## <<<--- মূল পরিবর্তন এখানে ---<<< ##
         # শুধুমাত্র প্রাইভেট চ্যাটে "Not Found" মেসেজ পাঠানো হবে
         if message.chat.type == ChatType.PRIVATE:
             reply_msg = await message.reply_text(
@@ -309,6 +308,6 @@ if __name__ == "__main__":
     web_thread = Thread(target=run_web_server)
     web_thread.start()
     
-    LOGGER.info("The Don is waking up... (v4.4 Final - Smart Search)")
+    LOGGER.info("The Don is waking up... (v4.5 Final - Error Fix)")
     app.run()
     LOGGER.info("The Don is resting...")
