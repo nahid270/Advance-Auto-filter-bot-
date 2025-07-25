@@ -1,7 +1,8 @@
 # =====================================================================================
-# ||                  GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.0)        ||
+# ||            GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.1)              ||
 # ||---------------------------------------------------------------------------------||
-# || IndexError এবং EntityBoundsInvalid ফিক্স করার পর এটি চূড়ান্ত সংস্করণ।           ||
+# ||     IndexError, EntityBoundsInvalid এবং Callback Handler ফিক্স করার পর          ||
+# ||                           এটি চূড়ান্ত সংস্করণ।                                 ||
 # =====================================================================================
 
 import os
@@ -14,7 +15,7 @@ from threading import Thread
 from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ChatType, ParseMode # ParseMode ইম্পোর্ট করা হয়েছে
+from pyrogram.enums import ChatType, ParseMode
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
@@ -104,7 +105,6 @@ async def add_channel_command(_, message):
             channels_db.insert_one({"_id": channel_id})
             await message.reply(f"✅ Channel `{channel_id}` has been added.")
     except IndexError:
-        # *** পরিবর্তন ১: Markdown ফরম্যাটিং সরানো হয়েছে ***
         await message.reply("❌ Usage: /addchannel <channel_id>")
     except ValueError:
         await message.reply("❌ Invalid Channel ID. Please provide a numeric ID.")
@@ -132,7 +132,6 @@ async def list_channels_command(_, message):
 # --- ধাপ ২: সাধারণ ইউজার কমান্ড হ্যান্ডলার ---
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
-    # ... (আপনার start কমান্ডের কোড অপরিবর্তিত) ...
     user_id = message.from_user.id
     if not users_db.find_one({"_id": user_id}): users_db.insert_one({"_id": user_id, "name": message.from_user.first_name})
     if len(message.command) > 1:
@@ -155,9 +154,8 @@ async def start_handler(client, message):
     else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie name to search.")
 
 # --- ধাপ ৩: কলব্যাক হ্যান্ডলার ---
-@app.on_message(filters.callback_query)
+@app.on_callback_query()  # <-- মূল পরিবর্তন এখানে: on_message এর পরিবর্তে on_callback_query ব্যবহৃত হয়েছে
 async def callback_handler(client, callback_query):
-    # ... (আপনার callback_handler কোড অপরিবর্তিত) ...
     data, user_id = callback_query.data, callback_query.from_user.id
     if data.startswith("showqual_"):
         movie_id = ObjectId(data.split("_", 1)[1])
@@ -170,7 +168,6 @@ async def callback_handler(client, callback_query):
     await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False):
-    # ... (আপনার show_quality_options কোড অপরিবর্তিত) ...
     files = list(files_db.find({"movie_id": movie_id}))
     if not files: await message.reply_text("Sorry, no files found."); return
     movie = movie_info_db.find_one({"_id": movie_id})
