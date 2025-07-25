@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||    GODFATHER MOVIE BOT (v3.1 - Flexible Indexing With/Without Year)             ||
+# ||      GODFATHER MOVIE BOT (v4.0 - Final, Polished & Self-Reliant)                ||
 # ||---------------------------------------------------------------------------------||
-# ||     এই সংস্করণটি সাল সহ এবং সাল ছাড়া উভয় প্রকার ক্যাপশন ইনডেক্স করতে সক্ষম।      ||
+# ||     এটি চূড়ান্ত সংস্করণ। Atlas Search ছাড়াই নির্ভরযোগ্য সার্চ এবং সমস্ত বাগ ফিক্স করা হয়েছে।     ||
 # =====================================================================================
 
 import os
@@ -15,6 +15,7 @@ from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ChatType
+from pyrogram.errors import MessageNotModified
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson.objectid import ObjectId
 
@@ -24,10 +25,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 LOGGER = logging.getLogger(__name__)
 
 # --- আপনার ফাইল চ্যানেলের আইডি এখানে দিন ---
+# আইডি অবশ্যই একটি সংখ্যা হতে হবে, যেমন: -1001234567890
 FILE_CHANNEL_ID = -1002744890741  # <====== আপনার আসল ফাইল চ্যানেলের আইডি এখানে দিন
 
-if FILE_CHANNEL_ID == -1001234567890:
-    LOGGER.warning("CRITICAL: Please update the FILE_CHANNEL_ID in the code with your actual channel ID.")
+if FILE_CHANNEL_ID == 0: # একটি সাধারণ চেক
+    LOGGER.critical("CRITICAL: Please update the FILE_CHANNEL_ID in the code with your actual channel ID.")
+    exit()
 
 try:
     API_ID = int(os.environ.get("API_ID"))
@@ -67,7 +70,7 @@ async def delete_messages_after_delay(messages, delay):
         except Exception: pass
 
 
-# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার (নতুন) ========= #
+# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 async def flexible_save_movie_quality(client, message):
     if message.chat.id != FILE_CHANNEL_ID: return
@@ -81,12 +84,12 @@ async def flexible_save_movie_quality(client, message):
         raw_title = title_match.group(1).strip()
         year = title_match.group(2)
     else:
-        # যদি সাল না পাওয়া যায়, তাহলে পুরো ক্যাপশনের শুরুটাকেই নাম হিসেবে ধরা হবে
-        # কোয়ালিটি, ভাষা ইত্যাদি শব্দ বাদ দিয়ে নাম নেওয়া হচ্ছে
-        stop_words = ['480p', '720p', '1080p', '2160p', '4k', 'hindi', 'english', 'dual', 'audio', 'web-dl', 'hdrip', 'bluray']
+        # যদি সাল না পাওয়া যায়, তাহলে ক্যাপশনের শুরুটাকেই নাম হিসেবে ধরা হবে
+        stop_words = ['480p', '720p', '1080p', '2160p', '4k', 'hindi', 'english', 'dual', 'audio', 'web-dl', 'hdrip', 'bluray', 'webrip']
         title_words = []
         for word in caption.split():
-            if word.lower().strip() in stop_words:
+            # এই শব্দগুলো পেলে নাম শেষ বলে ধরে নেওয়া হবে
+            if any(stop in word.lower() for stop in stop_words):
                 break
             title_words.append(word)
         raw_title = ' '.join(title_words).strip()
@@ -95,16 +98,13 @@ async def flexible_save_movie_quality(client, message):
         LOGGER.warning(f"Could not parse a valid title from caption: '{caption}'")
         return
 
-    # নামের মধ্য থেকে অপ্রয়োজনীয় শব্দ বাদ দেওয়া হচ্ছে
     clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
     
     quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
     language = next((lang for lang in ["hindi", "bangla", "english", "tamil", "telugu", "malayalam", "kannada"] if lang.lower() in caption.lower()), "Unknown")
     
-    # ডাটাবেসে সেভ করার জন্য কোয়েরি তৈরি
     query = {"title_lower": clean_title.lower()}
-    if year:
-        query["year"] = year
+    if year: query["year"] = year
 
     movie_doc = await movie_info_db.find_one_and_update(
         query,
@@ -122,10 +122,7 @@ async def flexible_save_movie_quality(client, message):
     LOGGER.info(f"✅ Indexed: {clean_title} {log_year} [{quality} - {language}]")
 
 
-# ... (বাকি অ্যাডমিন ও সাধারণ কমান্ডগুলো অপরিবর্তিত) ...
-# stats_command, start_handler, callback_handler অপরিবর্তিত থাকবে
-
-# ... (পূর্ববর্তী উত্তর থেকে এই ফাংশনগুলো এখানে কপি-পেস্ট করুন) ...
+# ========= 💻 অ্যাডমিন ও সাধারণ কমান্ড ========= #
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
     total_users = await users_db.count_documents({})
@@ -158,6 +155,7 @@ async def start_handler(client, message):
         except Exception as e: LOGGER.error(f"Deep link error: {e}"); await message.reply_text("🤔 Invalid/expired link.")
     else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
 
+# ========= 🔄 কলব্যাক হ্যান্ডলার ========= #
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     data, user_id = callback_query.data, callback_query.from_user.id
@@ -172,28 +170,29 @@ async def callback_handler(client, callback_query):
     await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False):
-    files_cursor = files_db.find({"movie_id": movie_id})
-    files = await files_cursor.to_list(length=None)
-    if not files: await message.reply_text("Sorry, no files found for this movie."); return
-    movie = await movie_info_db.find_one({"_id": movie_id})
-    if not movie: await message.reply_text("Sorry, could not find movie details."); return
-    
-    # সাল থাকলে দেখানো হবে, না থাকলে শুধু নাম
-    display_year = f"({movie['year']})" if movie.get('year') else ""
-    text = f"🎬 **{movie['title']} {display_year}**\n\n👇 Select quality:"
-    
-    buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in sorted(files, key=lambda x: x.get('quality', ''))]
     try:
+        files_cursor = files_db.find({"movie_id": movie_id})
+        files = await files_cursor.to_list(length=None)
+        if not files: return await message.edit_text("Sorry, no files found for this movie.")
+        
+        movie = await movie_info_db.find_one({"_id": movie_id})
+        if not movie: return await message.edit_text("Sorry, could not find movie details.")
+        
+        display_year = f"({movie['year']})" if movie.get('year') else ""
+        text = f"🎬 **{movie['title']} {display_year}**\n\n👇 Select quality:"
+        
+        buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in sorted(files, key=lambda x: x.get('quality', ''))]
+        
         if is_edit: await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         else: await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+    except MessageNotModified: pass # ব্যবহারকারী একই বাটনে দুইবার ক্লিক করলে এই এরর আসে, এটি স্বাভাবিক।
     except Exception as e: LOGGER.error(f"Show quality options error: {e}")
 
 
-# ========= 🔎 নির্ভরযোগ্য Regex সার্চ হ্যান্ডলার (নতুন) ========= #
+# ========= 🔎 চূড়ান্ত এবং নির্ভরযোগ্য Regex সার্চ হ্যান্ডলার ========= #
 @app.on_message((filters.private | filters.group) & filters.text)
 async def reliable_search_handler(client, message):
-    if message.text.startswith("/") or message.from_user.is_bot:
-        return
+    if message.text.startswith("/") or message.from_user.is_bot: return
 
     query = message.text.strip()
     cleaned_query = ' '.join(re.findall(r'\b[a-z\d]+\b', query.lower()))
@@ -207,15 +206,13 @@ async def reliable_search_handler(client, message):
         results = await results_cursor.to_list(length=None)
         
         LOGGER.info(f"Regex search for '{cleaned_query}' found {len(results)} results.")
-
     except Exception as e:
         LOGGER.error(f"Database find error: {e}")
-        await message.reply_text("⚠️ Bot is facing a database issue. Please report to the admin.")
-        return
+        return await message.reply_text("⚠️ Bot is facing a database issue. Please report to the admin.")
 
     if not results:
         if message.chat.type == ChatType.PRIVATE:
-            await message.reply_text(f"❌ **Not Found!**\n\nCould not find anything matching '*{query}*'.")
+            return await message.reply_text(f"❌ **Movie Not Found!**\n\nCould not find any movie matching '*{query}*'. Please check the spelling.")
         return
     
     if len(results) == 1:
@@ -237,6 +234,6 @@ if __name__ == "__main__":
     LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server)
     web_thread.start()
-    LOGGER.info("The Don is waking up... (Flexible Indexing Mode)")
+    LOGGER.info("The Don is waking up... (v4.0 Final - Self-Reliant Mode)")
     app.run()
     LOGGER.info("The Don is resting...")
