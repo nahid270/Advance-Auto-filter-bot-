@@ -2,4 +2,4 @@ pyrogram
 pymongo[srv]
 python-dotenv
 Flask
-gunicorn
+TGCrypto
