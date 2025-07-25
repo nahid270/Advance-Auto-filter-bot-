@@ -1,5 +1,6 @@
 pyrogram
-pymongo[srv]
+pymongo
 python-dotenv
 Flask
 TGCrypto
+motor
