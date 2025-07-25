@@ -1,7 +1,8 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v5.2 - Final with User-Account Indexer)             ||
+# ||      GODFATHER MOVIE BOT (v4.6 - Final Stable Version)                        ||
 # ||---------------------------------------------------------------------------------||
-# || নতুন ইনডেক্সিং সিস্টেম: ইউজার-অ্যাকাউন্ট ব্যবহার করে চ্যানেল হিস্টোরি ইনডেক্সিং। ||
+# || এই সংস্করণে গ্রুপ ও প্রাইভেট চ্যাটের সমস্ত মেসেজ অটো-ডিলিট করা হবে।            ||
+# || গ্রুপে সার্চ করে মুভি না পেলে বট চুপ থাকবে এবং প্রাইভেটে রিপ্লাই দেবে।        ||
 # =====================================================================================
 
 import os
@@ -19,263 +20,249 @@ from pyrogram.errors import MessageNotModified
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson.objectid import ObjectId
 
-# --- সেটআপ ---
+# --- পরিবেশ সেটআপ ও কনফিগারেশন ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 LOGGER = logging.getLogger(__name__)
 
-# --- এনভায়রনমেন্ট ভ্যারিয়েবল লোড এবং ভ্যালিডেশন ---
+# --- আপনার ফাইল চ্যানেলের আইডি এখানে দিন ---
+FILE_CHANNEL_ID = -1002744890741  # <====== আপনার আসল ফাইল চ্যানেলের আইডি এখানে দিন
+if FILE_CHANNEL_ID == 0:
+    LOGGER.critical("CRITICAL: Please update the FILE_CHANNEL_ID in the code.")
+    exit()
+
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
     MONGO_URL = os.environ.get("MONGO_URL")
     AD_PAGE_URL = os.environ.get("AD_PAGE_URL")
-    ADMIN_IDS = [int(i) for i in os.environ.get("ADMIN_IDS", "").split(",") if i.strip()]
+    ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(',') if id.strip()]
     PORT = int(os.environ.get("PORT", 8080))
-    DELETE_DELAY = 15 * 60
-    FILE_CHANNEL_ID = int(os.environ.get("FILE_CHANNEL_ID", "0"))
-    
-    # ইনডেক্সিং এর জন্য ইউজার সেশন স্ট্রিং
-    USER_SESSION_STRING = os.environ.get("USER_SESSION_STRING")
-
-except Exception as e:
-    LOGGER.critical(f"Env config error: {e}")
+    DELETE_DELAY = 15 * 60  # 15 মিনিট
+except (ValueError, TypeError) as e:
+    LOGGER.critical(f"Configuration error in environment variables: {e}")
     exit()
 
-if FILE_CHANNEL_ID == 0:
-    LOGGER.critical("FILE_CHANNEL_ID missing in .env. Auto-indexing will not work.")
-    exit()
-if not USER_SESSION_STRING:
-    LOGGER.warning("USER_SESSION_STRING missing in .env. Forward-based indexing will be disabled.")
-
-# --- ক্লায়েন্ট এবং ডাটাবেস ইনিশিয়ালাইজেশন ---
+# --- ক্লায়েন্ট, ডাটাবেস ও ওয়েব অ্যাপ ---
 app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-user_client = Client("UserIndexer", session_string=USER_SESSION_STRING, api_id=API_ID, api_hash=API_HASH) if USER_SESSION_STRING else None
-
 mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client["MovieDB"]
 movie_info_db = db["movie_info"]
 files_db = db["files"]
 users_db = db["users"]
-
 web_app = Flask(__name__)
 @web_app.route('/')
-def health(): return "Bot is alive!"
+def health_check(): return "Bot is alive and running!"
 
-# --- হেল্পার ফাংশন ---
-def is_admin(_, __, m): return m.from_user and m.from_user.id in ADMIN_IDS
+# ========= 📄 হেল্পার ফাংশন ========= #
+def is_admin(_, __, message):
+    """কমান্ডটি অ্যাডমিন পাঠিয়েছে কিনা তা পরীক্ষা করে"""
+    return message.from_user and message.from_user.id in ADMIN_IDS
+
 admin_filter = filters.create(is_admin)
 
-async def delete_messages_after_delay(msgs, delay):
+async def delete_messages_after_delay(messages_to_delete, delay):
+    """নির্দিষ্ট সময় পর মেসেজ ডিলিট করার টাস্ক তৈরি করে"""
     await asyncio.sleep(delay)
-    for m in msgs:
-        try: await m.delete()
-        except: pass
+    for msg in messages_to_delete:
+        try:
+            if msg: await msg.delete()
+        except Exception:
+            pass
 
-async def index_file(message):
-    try:
-        if not (message.video or message.document): return False
-        caption = message.caption or ""
-        title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption)
-        year = title_match.group(2) if title_match else None
-        raw_title = title_match.group(1).strip() if title_match else ' '.join(
-            w for w in caption.split() if not any(s in w.lower() for s in ['480p','720p','1080p','hindi','english','bangla','bengali','dual','audio','web-dl','hdrip','bluray','webrip'])
-        ).strip()
-        if not raw_title: return False
-
-        clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
-        quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
-        language = next((l.capitalize() for l in ["hindi","bangla","bengali","english","tamil","telugu","malayalam","kannada"] if l in caption.lower()), "Unknown")
-        if language.lower() in ["bangla", "bengali"]: language = "Bangla"
-
-        query = {"title_lower": clean_title.lower()}
-        if year: query["year"] = year
-        movie_doc = await movie_info_db.find_one_and_update(
-            query, {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}},
-            upsert=True, return_document=True
-        )
-
-        file_info = message.video or message.document
-        await files_db.update_one(
-            {"movie_id": movie_doc['_id'], "quality": quality, "language": language},
-            {"$set": {"file_id": file_info.file_id, "chat_id": message.chat.id, "msg_id": message.id}},
-            upsert=True
-        )
-        return True
-    except Exception as e:
-        LOGGER.error(f"Index error on message {message.id}: {e}")
-        return False
-
-# --- পাইরোগ্রাম হ্যান্ডলার ---
-
-# ফাইল চ্যানেলে নতুন ফাইল এলে অটো-ইনডেক্স
+# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
-async def auto_index_handler(client, message):
-    if message.chat.id == FILE_CHANNEL_ID:
-        if await index_file(message):
-            LOGGER.info(f"✅ Auto-Indexed: {message.caption.splitlines()[0] if message.caption else 'No Caption'}")
+async def flexible_save_movie_quality(client, message):
+    if message.chat.id != FILE_CHANNEL_ID: return
+    caption = message.caption or ""
+    # শিরোনাম এবং বছর বের করার চেষ্টা
+    title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption, re.IGNORECASE)
+    year = None
+    if title_match:
+        raw_title = title_match.group(1).strip()
+        year = title_match.group(2)
+    else: # যদি বছর খুঁজে না পাওয়া যায়, তবে স্টপ-ওয়ার্ড ব্যবহার করে শিরোনাম বের করা
+        stop_words = ['480p', '720p', '1080p', '2160p', '4k', 'hindi', 'english', 'bangla', 'bengali', 'dual', 'audio', 'web-dl', 'hdrip', 'bluray', 'webrip']
+        title_words = []
+        for word in caption.split():
+            if any(stop in word.lower() for stop in stop_words): break
+            title_words.append(word)
+        raw_title = ' '.join(title_words).strip()
 
-# অ্যাডমিন কমান্ড
+    if not raw_title:
+        LOGGER.warning(f"Could not parse a valid title from caption: '{caption}'"); return
+
+    clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
+    quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
+    languages_to_check = ["hindi", "bangla", "bengali", "english", "tamil", "telugu", "malayalam", "kannada"]
+    caption_lower = caption.lower()
+    language = "Unknown"
+    for lang in languages_to_check:
+        if lang in caption_lower:
+            language = "Bangla" if lang in ["bangla", "bengali"] else lang.capitalize()
+            break
+    
+    query = {"title_lower": clean_title.lower()}
+    if year: query["year"] = year
+    movie_doc = await movie_info_db.find_one_and_update(query, {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}}, upsert=True, return_document=True)
+    
+    file_info = message.video or message.document
+    await files_db.update_one({"movie_id": movie_doc['_id'], "quality": quality, "language": language}, {"$set": {"file_id": file_info.file_id, "chat_id": message.chat.id, "msg_id": message.id}}, upsert=True)
+    
+    log_year = f"({year})" if year else "(No Year)"
+    LOGGER.info(f"✅ Indexed: {clean_title} {log_year} [{quality} - {language}]")
+
+# ========= 👮 অ্যাডমিন কমান্ড ========= #
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
-    total_users, total_movies, total_files = await asyncio.gather(
-        users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({})
-    )
-    await message.reply_text(
-        f"📊 **Bot Stats**\n👥 ইউজার: `{total_users}`\n🎬 মুভি: `{total_movies}`\n📁 ফাইল: `{total_files}`\n📢 ফাইল চ্যানেল: `{FILE_CHANNEL_ID}`"
-    )
+    total_users, total_movies, total_files = await asyncio.gather(users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({}))
+    await message.reply_text(f"📊 **Bot Stats**\n\n👥 Users: `{total_users}`\n🎬 Movies: `{total_movies}`\n📁 Files: `{total_files}`\n\n📢 **Indexing Channel:** `{FILE_CHANNEL_ID}`")
 
-# ফরওয়ার্ড-বেইজড ইনডেক্সিং
-pending_index_requests = {}
-
-@app.on_message(filters.command("index") & admin_filter)
-async def request_index_channel(client, message):
-    if not user_client:
-        return await message.reply_text("❌ `USER_SESSION_STRING` সেট করা নেই। ইনডেক্সিং সম্ভব নয়।")
-    pending_index_requests[message.from_user.id] = True
-    await message.reply_text("📩 ইনডেক্স করার জন্য যেকোনো চ্যানেল থেকে একটি ফাইল এখানে ফরওয়ার্ড করুন।")
-
-@app.on_message(filters.forwarded & (filters.video | filters.document) & admin_filter)
-async def handle_forwarded_file_for_indexing(client, message):
-    uid = message.from_user.id
-    if uid not in pending_index_requests: return
-    del pending_index_requests[uid]
-
-    if not message.forward_from_chat:
-        return await message.reply_text("❌ ফরওয়ার্ডটি কোনো চ্যানেল থেকে আসেনি। আবার চেষ্টা করুন।")
-
-    channel_id = message.forward_from_chat.id
-    msg = await message.reply_text(f"⏳ চ্যানেল `{channel_id}` থেকে ইনডেক্সিং শুরু হচ্ছে...")
-
-    total, success = 0, 0
-    try:
-        # ইউজার ক্লায়েন্ট দিয়ে চ্যানেল হিস্টোরি পড়া হচ্ছে
-        async for m in user_client.get_chat_history(channel_id):
-            total += 1
-            if m.video or m.document:
-                if await index_file(m):
-                    success += 1
-            if total % 200 == 0:
-                try:
-                    await msg.edit_text(f"🔄 চলমান...\nস্ক্যান করা হয়েছে: `{total}` টি মেসেজ\nসফলভাবে ইনডেক্স হয়েছে: `{success}` টি ফাইল")
-                except MessageNotModified: pass
-        await msg.edit_text(f"✅ ইনডেক্সিং সম্পন্ন!\n\nমোট স্ক্যান: `{total}`\nসফল ইনডেক্স: `{success}`")
-    except Exception as e:
-        LOGGER.error(f"Indexing failed for channel {channel_id}: {e}")
-        await msg.edit_text(f"⚠️ ইনডেক্সিং করার সময় একটি সমস্যা হয়েছে:\n`{e}`\n\n✅ নিশ্চিত করুন আপনার পার্সোনাল অ্যাকাউন্ট (`USER_SESSION_STRING` যার) সেই চ্যানেলের একজন সদস্য।")
-
-# ইউজার ইন্টার‍্যাকশন
+# ========= 🤖 স্টার্ট এবং কলব্যাক হ্যান্ডলার ========= #
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
     user_id = message.from_user.id
     await users_db.update_one({"_id": user_id}, {"$set": {"name": message.from_user.first_name}}, upsert=True)
-
+    
     if len(message.command) > 1:
         try:
             payload = message.command[1]
-            decoded = base64.urlsafe_b64decode(payload).decode()
-            action, data_id, uid = decoded.split('_')
-            if user_id != int(uid): return await message.reply_text("😡 এই লিঙ্কটি আপনার জন্য নয়।")
+            decoded_data = base64.urlsafe_b64decode(payload).decode()
+            parts = decoded_data.split('_')
+            if len(parts) != 3: raise ValueError("Invalid payload format")
+            
+            action, data_id, verified_user_id_str = parts
+            if user_id != int(verified_user_id_str):
+                return await message.reply_text("😡 এই লিঙ্কটি আপনার জন্য নয়।")
+
             if action == "file":
                 file_doc = await files_db.find_one({"_id": ObjectId(data_id)})
-                movie_doc = await movie_info_db.find_one({"_id": file_doc['movie_id']})
-                caption = f"🎬 **{movie_doc['title']} ({movie_doc.get('year', '')})**\n✨ **Quality:** {file_doc['quality']}\n🌐 **Language:** {file_doc['language']}\n\n🙏 ধন্যবাদ!"
-                movie_msg = await client.copy_message(user_id, file_doc['chat_id'], file_doc['msg_id'], caption=caption)
-                warn = await message.reply_text(f"⚠️ ফাইলটি {DELETE_DELAY//60} মিনিট পর স্বয়ংক্রিয়ভাবে ডিলিট হয়ে যাবে।")
-                asyncio.create_task(delete_messages_after_delay([movie_msg, warn], DELETE_DELAY))
+                if file_doc:
+                    movie_doc = await movie_info_db.find_one({"_id": file_doc['movie_id']})
+                    display_year = f"({movie_doc['year']})" if movie_doc.get('year') else ""
+                    final_caption = (f"🎬 **{movie_doc['title']} {display_year}**\n"
+                                     f"✨ **Quality:** {file_doc['quality']}\n"
+                                     f"🌐 **Language:** {file_doc['language']}\n\n"
+                                     f"🙏 Thank you for using our bot!")
+                    
+                    movie_msg = await client.copy_message(chat_id=user_id, from_chat_id=file_doc['chat_id'], message_id=file_doc['msg_id'], caption=final_caption)
+                    warning_msg = await message.reply_text(f"❗ ফাইলটি **{DELETE_DELAY // 60} মিনিট** পর অটো-ডিলিট হয়ে যাবে।", quote=True)
+                    asyncio.create_task(delete_messages_after_delay([movie_msg, warning_msg], DELETE_DELAY))
         except Exception as e:
             LOGGER.error(f"Deep link error: {e}")
-            await message.reply_text("🤔 লিঙ্কটি অবৈধ অথবা এর মেয়াদ শেষ হয়ে গেছে।")
+            await message.reply_text("🤔 লিঙ্কটি সম্ভবত inválid বা মেয়াদোত্তীর্ণ।")
     else:
-        msg = await message.reply_text(f"👋 হাই **{message.from_user.first_name}**!\nসার্চ করার জন্য একটি মুভির নাম লিখুন।")
-        asyncio.create_task(delete_messages_after_delay([message, msg], 120))
+        reply_msg = await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
+        asyncio.create_task(delete_messages_after_delay([message, reply_msg], 120))
 
 @app.on_callback_query()
-async def callback_handler(client, cb):
-    data, uid = cb.data, cb.from_user.id
+async def callback_handler(client, callback_query):
+    data, user_id = callback_query.data, callback_query.from_user.id
+    
     if data.startswith("showqual_"):
-        movie_id = ObjectId(data.split("_")[1])
-        msg = await show_quality_options(cb.message, movie_id, is_edit=True, return_message=True)
-        if msg: asyncio.create_task(delete_messages_after_delay([msg], DELETE_DELAY))
-    elif data.startswith("getfile_"):
-        fid = data.split("_", 1)[1]
-        encoded = base64.urlsafe_b64encode(f"file_{fid}_{uid}".encode()).decode()
-        url = f"{AD_PAGE_URL}?data={encoded}"
-        await cb.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=url)]]))
-    await cb.answer()
+        movie_id = ObjectId(data.split("_", 1)[1])
+        new_msg = await show_quality_options(callback_query.message, movie_id, is_edit=True, return_message=True)
+        if new_msg:
+            asyncio.create_task(delete_messages_after_delay([new_msg], DELETE_DELAY))
 
-async def show_quality_options(msg, movie_id, is_edit=False, return_message=False):
+    elif data.startswith("getfile_"):
+        file_id_str = data.split("_", 1)[1]
+        encoded_data = base64.urlsafe_b64encode(f'file_{file_id_str}_{user_id}'.encode()).decode()
+        verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
+        await callback_query.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=verification_url)]]))
+    
+    await callback_query.answer()
+
+async def show_quality_options(message, movie_id, is_edit=False, return_message=False):
+    reply_msg = None
     try:
         files = await files_db.find({"movie_id": movie_id}).sort("quality").to_list(length=None)
         if not files:
-            txt = "দুঃখিত, এই মুভির কোনো ফাইল খুঁজে পাওয়া যায়নি।"
-            reply = await msg.edit_text(txt) if is_edit else await msg.reply_text(txt, quote=True)
-            return reply if return_message else None
+            text = "দুঃখিত, এই মুভির জন্য কোনো ফাইল পাওয়া যায়নি।"
+            reply_msg = await message.edit_text(text) if is_edit else await message.reply_text(text)
+            return reply_msg if return_message else None
 
         movie = await movie_info_db.find_one({"_id": movie_id})
-        title = movie['title']
-        year = f"({movie['year']})" if movie.get('year') else ""
-        text = f"🎬 **{title} {year}**\n\n👇 পছন্দের কোয়ালিটি বেছে নিন:"
+        if not movie:
+            text = "দুঃখিত, মুভির বিস্তারিত তথ্য পাওয়া যায়নি।"
+            reply_msg = await message.edit_text(text) if is_edit else await message.reply_text(text)
+            return reply_msg if return_message else None
+
+        display_year = f"({movie['year']})" if movie.get('year') else ""
+        text = f"🎬 **{movie['title']} {display_year}**\n\n👇 আপনার পছন্দের কোয়ালিটি বেছে নিন:"
         buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
+        
+        markup = InlineKeyboardMarkup(buttons)
         if is_edit:
-            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-            return msg if return_message else None
+            await message.edit_text(text, reply_markup=markup)
+            reply_msg = message
         else:
-            return await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
-    except MessageNotModified:
-        return msg if return_message else None
-    except Exception as e:
-        LOGGER.error(f"show_quality_options error: {e}")
-        return None
+            reply_msg = await message.reply_text(text, reply_markup=markup, quote=True)
+        
+        return reply_msg if return_message else None
 
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command(["start", "stats", "index"]))
-async def search_handler(client, msg):
-    if not msg.text or (msg.from_user and msg.from_user.is_bot): return
-    query = msg.text.strip()
-    cleaned = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', query.lower()))
-    if not cleaned: return
+    except MessageNotModified: return message if return_message else None
+    except Exception as e: LOGGER.error(f"Show quality options error: {e}"); return None
 
-    regex = re.compile('.*'.join(cleaned.split()), re.IGNORECASE)
-    to_delete = [msg]
-    reply = None
+# ========= 🔎 চূড়ান্ত Regex সার্চ হ্যান্ডলার (গ্রুপে সাইলেন্ট, প্রাইভেটে রেসপন্সিভ) ========= #
+@app.on_message((filters.private | filters.group) & filters.text) # <<<--- ফিল্টারটি সহজ করা হয়েছে
+async def reliable_search_handler(client, message):
+    # <<<--- ফাংশনের ভেতরে কমান্ড চেক করা হচ্ছে, এটি সবচেয়ে নির্ভরযোগ্য উপায় ---<<<
+    if message.text and message.text.startswith('/'):
+        return
+    if message.from_user.is_bot: 
+        return
+
+    query = message.text.strip()
+    cleaned_query = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', query.lower()))
+    if not cleaned_query: return
+    
+    search_pattern = '.*'.join(cleaned_query.split())
+    search_regex = re.compile(search_pattern, re.IGNORECASE)
+    
+    messages_to_delete = [message]
+    reply_msg = None
+
     try:
-        results = await movie_info_db.find({'title_lower': regex}).limit(10).to_list(length=10)
+        results = await movie_info_db.find({'title_lower': search_regex}).limit(10).to_list(length=10)
+        LOGGER.info(f"Search for '{cleaned_query}' in chat {message.chat.id} ({message.chat.type.name}) found {len(results)} results.")
     except Exception as e:
-        LOGGER.error(f"Search error: {e}")
-        if msg.chat.type == ChatType.PRIVATE:
-            reply = await msg.reply_text("⚠️ ডাটাবেস সংযোগে সমস্যা হয়েছে।")
-            to_delete.append(reply)
-        asyncio.create_task(delete_messages_after_delay(to_delete, 60))
+        LOGGER.error(f"Database find error: {e}")
+        if message.chat.type == ChatType.PRIVATE:
+            reply_msg = await message.reply_text("⚠️ বট একটি ডাটাবেস সমস্যার সম্মুখীন হয়েছে।")
+            messages_to_delete.append(reply_msg)
+        asyncio.create_task(delete_messages_after_delay(messages_to_delete, 60))
         return
 
     if not results:
-        if msg.chat.type == ChatType.PRIVATE:
-            reply = await msg.reply_text("❌ দুঃখিত, আপনার সার্চের সাথে মিলে এমন কিছু পাওয়া যায়নি।", quote=True)
+        if message.chat.type == ChatType.PRIVATE:
+            reply_msg = await message.reply_text("❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\nঅনুগ্রহ করে নামের বানানটি পরীক্ষা করে আবার চেষ্টা করুন।", quote=True)
+            messages_to_delete.append(reply_msg)
     elif len(results) == 1:
-        reply = await show_quality_options(msg, results[0]['_id'], return_message=True)
+        reply_msg = await show_quality_options(message, results[0]['_id'], return_message=True)
+        if reply_msg: messages_to_delete.append(reply_msg)
     else:
-        buttons = [[InlineKeyboardButton(f"🎬 {m['title']} ({m.get('year', '')})", callback_data=f"showqual_{m['_id']}")] for m in results]
-        reply = await msg.reply_text("🤔 আপনি কি নিচের কোনো একটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
-
-    if reply: to_delete.append(reply)
-    asyncio.create_task(delete_messages_after_delay(to_delete, DELETE_DELAY))
-
-# --- বট চালু করা ---
-async def main():
-    if user_client:
-        await user_client.start()
-        LOGGER.info("User-Indexer Client Started.")
+        buttons = []
+        for movie in results:
+            display_year = f"({movie['year']})" if movie.get('year') else ""
+            buttons.append([InlineKeyboardButton(f"🎬 {movie['title']} {display_year}", callback_data=f"showqual_{movie['_id']}")])
+        
+        reply_msg = await message.reply_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+        messages_to_delete.append(reply_msg)
     
-    await app.start()
-    LOGGER.info("Bot Client Started.")
-    
-    LOGGER.info("✅ GODFATHER BOT IS NOW ONLINE (v5.2)")
-    await asyncio.Future() # প্রোগ্রামকে চলমান রাখে
+    if messages_to_delete:
+        asyncio.create_task(delete_messages_after_delay(messages_to_delete, DELETE_DELAY))
 
-def run_web():
-    web_app.run(host="0.0.0.0", port=PORT)
+# ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
+def run_web_server():
+    web_app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    Thread(target=run_web).start()
-    asyncio.run(main())
+    LOGGER.info("Starting web server on a separate thread...")
+    web_thread = Thread(target=run_web_server)
+    web_thread.start()
+    
+    LOGGER.info("The Don is waking up... (v4.6 Final Stable Version)")
+    app.run()
+    LOGGER.info("The Don is resting...")
