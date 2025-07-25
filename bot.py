@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v3.0 - Final & Reliable Regex Search Version)         ||
+# ||    GODFATHER MOVIE BOT (v3.1 - Flexible Indexing With/Without Year)             ||
 # ||---------------------------------------------------------------------------------||
-# ||     Atlas Search ছাড়া Regex ভিত্তিক নির্ভরযোগ্য সার্চ। কোনো বিশেষ DB কনফিগারেশন প্রয়োজন নেই।     ||
+# ||     এই সংস্করণটি সাল সহ এবং সাল ছাড়া উভয় প্রকার ক্যাপশন ইনডেক্স করতে সক্ষম।      ||
 # =====================================================================================
 
 import os
@@ -24,8 +24,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 LOGGER = logging.getLogger(__name__)
 
 # --- আপনার ফাইল চ্যানেলের আইডি এখানে দিন ---
-# আইডি অবশ্যই একটি সংখ্যা হতে হবে, যেমন: -1001234567890
-FILE_CHANNEL_ID = -1002744890741 # <====== আপনার আসল ফাইল চ্যানেলের আইডি এখানে দিন
+FILE_CHANNEL_ID = -1002744890741  # <====== আপনার আসল ফাইল চ্যানেলের আইডি এখানে দিন
 
 if FILE_CHANNEL_ID == -1001234567890:
     LOGGER.warning("CRITICAL: Please update the FILE_CHANNEL_ID in the code with your actual channel ID.")
@@ -68,34 +67,48 @@ async def delete_messages_after_delay(messages, delay):
         except Exception: pass
 
 
-# ========= 📢 চ্যানেল থেকে মুভি সেভ ========= #
+# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার (নতুন) ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
-async def save_movie_quality(client, message):
+async def flexible_save_movie_quality(client, message):
     if message.chat.id != FILE_CHANNEL_ID: return
     
     caption = message.caption or ""
-    # এখানে Regex উন্নত করা হয়েছে যেন ব্র্যাকেট ছাড়াও সাল খুঁজে পায়
-    # এই প্যাটার্নটি `Movie Name (YYYY)` বা `Movie Name YYYY` উভয়কেই সমর্থন করবে।
+    # প্রথমে সাল সহ খোঁজার চেষ্টা করা হবে
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption, re.IGNORECASE)
     
-    if not title_match:
-        LOGGER.warning(f"Could not parse Title and Year from msg {message.id}. Caption: '{caption}'")
-        return
-        
-    # নামের মধ্য থেকে অপ্রয়োজনীয় শব্দ বাদ দেওয়া হচ্ছে
-    raw_title = title_match.group(1).strip()
-    year = title_match.group(2)
-    # নামের শেষে থাকা সিজন বা অন্য তথ্য বাদ দেওয়া
-    clean_title = re.sub(r'\s*S\d+.*', '', raw_title, flags=re.IGNORECASE).strip()
-    # ডট বা আন্ডারস্কোরকে স্পেস দিয়ে প্রতিস্থাপন করা
-    clean_title = re.sub(r'[\.\_]', ' ', clean_title).strip() # .strip() যোগ করা হয়েছে অতিরিক্ত স্পেস বাদ দিতে
+    year = None
+    if title_match:
+        raw_title = title_match.group(1).strip()
+        year = title_match.group(2)
+    else:
+        # যদি সাল না পাওয়া যায়, তাহলে পুরো ক্যাপশনের শুরুটাকেই নাম হিসেবে ধরা হবে
+        # কোয়ালিটি, ভাষা ইত্যাদি শব্দ বাদ দিয়ে নাম নেওয়া হচ্ছে
+        stop_words = ['480p', '720p', '1080p', '2160p', '4k', 'hindi', 'english', 'dual', 'audio', 'web-dl', 'hdrip', 'bluray']
+        title_words = []
+        for word in caption.split():
+            if word.lower().strip() in stop_words:
+                break
+            title_words.append(word)
+        raw_title = ' '.join(title_words).strip()
 
+    if not raw_title:
+        LOGGER.warning(f"Could not parse a valid title from caption: '{caption}'")
+        return
+
+    # নামের মধ্য থেকে অপ্রয়োজনীয় শব্দ বাদ দেওয়া হচ্ছে
+    clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
+    
     quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
     language = next((lang for lang in ["hindi", "bangla", "english", "tamil", "telugu", "malayalam", "kannada"] if lang.lower() in caption.lower()), "Unknown")
     
+    # ডাটাবেসে সেভ করার জন্য কোয়েরি তৈরি
+    query = {"title_lower": clean_title.lower()}
+    if year:
+        query["year"] = year
+
     movie_doc = await movie_info_db.find_one_and_update(
-        {"title_lower": clean_title.lower(), "year": year},
-        {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}}, # নিশ্চিত করা হলো title_lower সেট হচ্ছে
+        query,
+        {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}},
         upsert=True, return_document=True
     )
     
@@ -104,10 +117,15 @@ async def save_movie_quality(client, message):
         {"$set": {"file_id": message.video.file_id if message.video else message.document.file_id, "chat_id": message.chat.id, "msg_id": message.id}},
         upsert=True
     )
-    LOGGER.info(f"✅ Indexed: {clean_title} ({year}) [{quality} - {language}]")
+
+    log_year = f"({year})" if year else "(No Year)"
+    LOGGER.info(f"✅ Indexed: {clean_title} {log_year} [{quality} - {language}]")
 
 
-# ========= 💻 অ্যাডমিন ও সাধারণ কমান্ড ========= #
+# ... (বাকি অ্যাডমিন ও সাধারণ কমান্ডগুলো অপরিবর্তিত) ...
+# stats_command, start_handler, callback_handler অপরিবর্তিত থাকবে
+
+# ... (পূর্ববর্তী উত্তর থেকে এই ফাংশনগুলো এখানে কপি-পেস্ট করুন) ...
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
     total_users = await users_db.count_documents({})
@@ -132,14 +150,14 @@ async def start_handler(client, message):
                 file_doc = await files_db.find_one({"_id": ObjectId(data_id)})
                 if file_doc:
                     movie_doc = await movie_info_db.find_one({"_id": file_doc['movie_id']})
-                    final_caption = (f"🎬 **{movie_doc['title']} ({movie_doc['year']})**\n✨ **Quality:** {file_doc['quality']}\n🌐 **Language:** {file_doc['language']}\n\n🙏 Thank you!")
+                    display_year = f"({movie_doc['year']})" if movie_doc.get('year') else ""
+                    final_caption = (f"🎬 **{movie_doc['title']} {display_year}**\n✨ **Quality:** {file_doc['quality']}\n🌐 **Language:** {file_doc['language']}\n\n🙏 Thank you!")
                     movie_msg = await client.copy_message(chat_id=user_id, from_chat_id=file_doc['chat_id'], message_id=file_doc['msg_id'], caption=final_caption)
                     warning_msg = await message.reply_text(f"❗ File auto-deletes in **{DELETE_DELAY // 60} mins**.", quote=True)
                     asyncio.create_task(delete_messages_after_delay([movie_msg, warning_msg], DELETE_DELAY))
         except Exception as e: LOGGER.error(f"Deep link error: {e}"); await message.reply_text("🤔 Invalid/expired link.")
-    else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie name to search.")
+    else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
 
-# ========= 🔄 কলব্যাক হ্যান্ডলার ========= #
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     data, user_id = callback_query.data, callback_query.from_user.id
@@ -159,70 +177,55 @@ async def show_quality_options(message, movie_id, is_edit=False):
     if not files: await message.reply_text("Sorry, no files found for this movie."); return
     movie = await movie_info_db.find_one({"_id": movie_id})
     if not movie: await message.reply_text("Sorry, could not find movie details."); return
+    
+    # সাল থাকলে দেখানো হবে, না থাকলে শুধু নাম
+    display_year = f"({movie['year']})" if movie.get('year') else ""
+    text = f"🎬 **{movie['title']} {display_year}**\n\n👇 Select quality:"
+    
     buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in sorted(files, key=lambda x: x.get('quality', ''))]
-    text = f"🎬 **{movie['title']} ({movie['year']})**\n\n👇 Select quality:"
     try:
         if is_edit: await message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         else: await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
     except Exception as e: LOGGER.error(f"Show quality options error: {e}")
 
 
-# ========= 🔎 চূড়ান্ত এবং নির্ভরযোগ্য Regex সার্চ হ্যান্ডলার ========= #
+# ========= 🔎 নির্ভরযোগ্য Regex সার্চ হ্যান্ডলার (নতুন) ========= #
 @app.on_message((filters.private | filters.group) & filters.text)
 async def reliable_search_handler(client, message):
     if message.text.startswith("/") or message.from_user.is_bot:
         return
 
     query = message.text.strip()
-    LOGGER.info(f"Received search query: '{query}' from user {message.from_user.id}")
+    cleaned_query = ' '.join(re.findall(r'\b[a-z\d]+\b', query.lower()))
+    if not cleaned_query: return
 
-    # ব্যবহারকারীর ইনপুট থেকে শুধুমাত্র মূল শব্দগুলো নেওয়া হচ্ছে
-    # যেমন: "watch sarzameen movie online free" হয়ে যাবে "sarzameen movie"
-    # এখানে কেবল অক্ষর ও সংখ্যা রাখা হয়েছে, কারণ Regex এ বিশেষ অক্ষরের প্রয়োজন নেই
-    cleaned_query_parts = re.findall(r'\b[a-z\d]+\b', query.lower())
-    if not cleaned_query_parts:
-        LOGGER.info(f"Cleaned query is empty for '{query}'. Skipping search.")
-        if message.chat.type == ChatType.PRIVATE:
-            await message.reply_text(f"Please provide a valid movie name to search.")
-        return
-
-    # Regex তৈরি করা হচ্ছে যা প্রতিটি শব্দের কাছাকাছি মিল খুঁজবে
-    # যেমন: 'sarza meen' দিয়ে সার্চ করলে 'sarzameen' খুঁজে পাবে
-    # প্রতিটি শব্দকে স্বাধীনভাবে খুঁজে বের করার জন্য এই প্যাটার্ন তৈরি করা হয়েছে।
-    # \b নিশ্চিত করবে যে শব্দগুলো পূর্ণাঙ্গ শব্দ হিসেবে ম্যাচ করে এবং .* শব্দের মাঝে যেকোনো কিছু ম্যাচ করে।
-    search_pattern = r'\b' + r'\b.*\b'.join(re.escape(word) for word in cleaned_query_parts) + r'\b'
+    search_pattern = '.*'.join(cleaned_query.split())
     search_regex = re.compile(search_pattern, re.IGNORECASE)
 
-    LOGGER.info(f"Searching for cleaned query: '{' '.join(cleaned_query_parts)}' with Regex pattern: '{search_pattern}'")
-
     try:
-        # ডাটাবেসে title_lower ফিল্ডে সরাসরি Regex দিয়ে সার্চ করা হচ্ছে
         results_cursor = movie_info_db.find({'title_lower': search_regex}).limit(10)
         results = await results_cursor.to_list(length=None)
         
-        LOGGER.info(f"Regex search for '{query}' found {len(results)} results.")
+        LOGGER.info(f"Regex search for '{cleaned_query}' found {len(results)} results.")
 
     except Exception as e:
-        LOGGER.error(f"Database find error for query '{query}': {e}")
+        LOGGER.error(f"Database find error: {e}")
         await message.reply_text("⚠️ Bot is facing a database issue. Please report to the admin.")
         return
 
     if not results:
         if message.chat.type == ChatType.PRIVATE:
-            await message.reply_text(f"❌ **Movie Not Found!**\n\nCould not find any movie matching '*{query}*'. Please check the spelling.")
-        else:
-            # গ্রুপ চ্যাটে নট ফাউন্ড মেসেজ না দিয়ে silence থাকতে পারে, বা একটি সংক্ষিপ্ত মেসেজ
-            pass # অথবা await message.reply_text("❌ No movie found.", quote=True)
+            await message.reply_text(f"❌ **Not Found!**\n\nCould not find anything matching '*{query}*'.")
         return
     
-    # ফলাফল প্রদর্শন
     if len(results) == 1:
         await show_quality_options(message, results[0]['_id'])
     else:
-        buttons = [
-            [InlineKeyboardButton(f"🎬 {movie['title']} ({movie['year']})", callback_data=f"showqual_{movie['_id']}")]
-            for movie in results
-        ]
+        buttons = []
+        for movie in results:
+            display_year = f"({movie['year']})" if movie.get('year') else ""
+            buttons.append([InlineKeyboardButton(f"🎬 {movie['title']} {display_year}", callback_data=f"showqual_{movie['_id']}")])
+        
         await message.reply_text("🤔 Did you mean one of these?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
 
 
@@ -234,7 +237,6 @@ if __name__ == "__main__":
     LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server)
     web_thread.start()
-    LOGGER.info("The Don is waking up... (Reliable Regex Search Mode)")
+    LOGGER.info("The Don is waking up... (Flexible Indexing Mode)")
     app.run()
     LOGGER.info("The Don is resting...")
-
