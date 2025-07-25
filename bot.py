@@ -1,7 +1,7 @@
 # =====================================================================================
 # ||                            GODFATHER MOVIE BOT (Final Corrected Version)        ||
 # ||---------------------------------------------------------------------------------||
-# || TypeError সমাধানের পর এটি চূড়ান্ত কোড, 'python bot.py' দিয়ে চালানোর জন্য প্রস্তুত।  ||
+# || TypeError এবং TgCrypto সমস্যার সমাধানের পর এটি চূড়ান্ত কোড।                       ||
 # =====================================================================================
 
 import os
@@ -58,8 +58,7 @@ def is_admin(user_id):
 @app.on_message(filters.channel & (filters.video | filters.document))
 def save_movie(client, message):
     channel_id = message.chat.id
-    if not channels.find_one({"_id": channel_id}):
-        return
+    if not channels.find_one({"_id": channel_id}): return
     text_to_parse = message.caption or ""
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", text_to_parse)
     if not title_match:
@@ -74,7 +73,7 @@ def save_movie(client, message):
             language = lang
             break
     file_id = message.video.file_id if message.video else message.document.file_id
-    data = { "title": title, "year": year, "language": language, "file_id": file_id, "chat_id": message.chat.id, "msg_id": message.id, }
+    data = {"title": title, "year": year, "language": language, "file_id": file_id, "chat_id": message.chat.id, "msg_id": message.id}
     if not movies.find_one({"title": title, "year": year}):
         movies.insert_one(data)
         LOGGER.info(f"✅ Movie Saved: {title} ({year}) from channel {channel_id}")
@@ -95,7 +94,7 @@ def start_handler(client, message):
                 return message.reply_text("😡 **Verification Failed!** This link was not generated for you.")
             movie = movies.find_one({"_id": ObjectId(movie_id_str)})
             if movie:
-                client.copy_message( chat_id=user_id, from_chat_id=movie['chat_id'], message_id=movie['msg_id'], caption=f"✅ **Verification Successful!**\n\n🎬 **{movie['title']} ({movie['year']})**\n\nThank you for using our bot!")
+                client.copy_message(chat_id=user_id, from_chat_id=movie['chat_id'], message_id=movie['msg_id'], caption=f"✅ **Verification Successful!**\n\n🎬 **{movie['title']} ({movie['year']})**\n\nThank you for using our bot!")
             else:
                 message.reply_text("❌ Sorry, the movie could not be found. It might have been removed.")
         except Exception as e:
@@ -126,31 +125,29 @@ def add_channel_command(_, message):
     except (IndexError, ValueError):
         message.reply("❌ **Usage:** `/addchannel <channel_id>`")
 
+# ... (অন্যান্য অ্যাডমিন কমান্ডগুলো এখানে থাকবে) ...
 @app.on_message(filters.command("delchannel") & filters.create(lambda _, __, m: is_admin(m.from_user.id)))
 def del_channel_command(_, message):
     try:
         channel_id = int(message.text.split(None, 1)[1])
         result = channels.delete_one({"_id": channel_id})
-        if result.deleted_count:
-            message.reply(f"✅ Channel `{channel_id}` has been removed.")
-        else:
-            message.reply("⚠️ Channel not found in the authorized list.")
-    except (IndexError, ValueError):
-        message.reply("❌ **Usage:** `/delchannel <channel_id>`")
+        if result.deleted_count: message.reply(f"✅ Channel `{channel_id}` has been removed.")
+        else: message.reply("⚠️ Channel not found in the authorized list.")
+    except (IndexError, ValueError): message.reply("❌ **Usage:** `/delchannel <channel_id>`")
 
 @app.on_message(filters.command("channels") & filters.create(lambda _, __, m: is_admin(m.from_user.id)))
 def list_channels_command(_, message):
     all_channels = list(channels.find({}))
-    if not all_channels:
-        return message.reply("No channels have been authorized yet.")
+    if not all_channels: return message.reply("No channels have been authorized yet.")
     text = "📄 **Authorized Channels:**\n\n"
     for channel in all_channels:
         text += f"• `{channel['_id']}`\n"
     message.reply(text)
 
+
 # ========= 🔎 মুভি সার্চ (সর্বশেষ প্রায়োরিটি) ========= #
-# *** এখানেই পরিবর্তনটি করা হয়েছে: ~filters.command() এর বদলে ~filters.command ***
-@app.on_message(filters.private & filters.text & ~filters.command)
+# *** এখানে ~filters.command বাদ দেওয়া হয়েছে, কারণ এটি অপ্রয়োজনীয় এবং ত্রুটির কারণ ছিল ***
+@app.on_message(filters.private & filters.text)
 def search_movie(client, message):
     query = message.text.strip()
     result = movies.find_one({"title": {"$regex": query, "$options": "i"}})
