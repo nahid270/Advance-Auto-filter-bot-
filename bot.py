@@ -75,6 +75,7 @@ async def save_movie_quality(client, message):
     
     caption = message.caption or ""
     # এখানে Regex উন্নত করা হয়েছে যেন ব্র্যাকেট ছাড়াও সাল খুঁজে পায়
+    # এই প্যাটার্নটি `Movie Name (YYYY)` বা `Movie Name YYYY` উভয়কেই সমর্থন করবে।
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption, re.IGNORECASE)
     
     if not title_match:
@@ -86,14 +87,15 @@ async def save_movie_quality(client, message):
     year = title_match.group(2)
     # নামের শেষে থাকা সিজন বা অন্য তথ্য বাদ দেওয়া
     clean_title = re.sub(r'\s*S\d+.*', '', raw_title, flags=re.IGNORECASE).strip()
-    clean_title = re.sub(r'[\.\_]', ' ', clean_title)
+    # ডট বা আন্ডারস্কোরকে স্পেস দিয়ে প্রতিস্থাপন করা
+    clean_title = re.sub(r'[\.\_]', ' ', clean_title).strip() # .strip() যোগ করা হয়েছে অতিরিক্ত স্পেস বাদ দিতে
 
     quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
     language = next((lang for lang in ["hindi", "bangla", "english", "tamil", "telugu", "malayalam", "kannada"] if lang.lower() in caption.lower()), "Unknown")
     
     movie_doc = await movie_info_db.find_one_and_update(
         {"title_lower": clean_title.lower(), "year": year},
-        {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}},
+        {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}}, # নিশ্চিত করা হলো title_lower সেট হচ্ছে
         upsert=True, return_document=True
     )
     
@@ -120,7 +122,6 @@ async def start_handler(client, message):
         await users_db.insert_one({"_id": user_id, "name": message.from_user.first_name})
     if len(message.command) > 1:
         try:
-            # ... (এই অংশটি অপরিবর্তিত)
             payload = message.command[1]
             decoded_data = base64.urlsafe_b64decode(payload).decode()
             parts = decoded_data.split('_')
@@ -141,7 +142,6 @@ async def start_handler(client, message):
 # ========= 🔄 কলব্যাক হ্যান্ডলার ========= #
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
-    # ... (এই অংশটি অপরিবর্তিত)
     data, user_id = callback_query.data, callback_query.from_user.id
     if data.startswith("showqual_"):
         movie_id = ObjectId(data.split("_", 1)[1])
@@ -154,7 +154,6 @@ async def callback_handler(client, callback_query):
     await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False):
-    # ... (এই অংশটি অপরিবর্তিত)
     files_cursor = files_db.find({"movie_id": movie_id})
     files = await files_cursor.to_list(length=None)
     if not files: await message.reply_text("Sorry, no files found for this movie."); return
@@ -175,31 +174,45 @@ async def reliable_search_handler(client, message):
         return
 
     query = message.text.strip()
+    LOGGER.info(f"Received search query: '{query}' from user {message.from_user.id}")
+
     # ব্যবহারকারীর ইনপুট থেকে শুধুমাত্র মূল শব্দগুলো নেওয়া হচ্ছে
     # যেমন: "watch sarzameen movie online free" হয়ে যাবে "sarzameen movie"
-    cleaned_query = ' '.join(re.findall(r'\b[a-z\d]+\b', query.lower()))
-    if not cleaned_query: return
+    # এখানে কেবল অক্ষর ও সংখ্যা রাখা হয়েছে, কারণ Regex এ বিশেষ অক্ষরের প্রয়োজন নেই
+    cleaned_query_parts = re.findall(r'\b[a-z\d]+\b', query.lower())
+    if not cleaned_query_parts:
+        LOGGER.info(f"Cleaned query is empty for '{query}'. Skipping search.")
+        if message.chat.type == ChatType.PRIVATE:
+            await message.reply_text(f"Please provide a valid movie name to search.")
+        return
 
     # Regex তৈরি করা হচ্ছে যা প্রতিটি শব্দের কাছাকাছি মিল খুঁজবে
     # যেমন: 'sarza meen' দিয়ে সার্চ করলে 'sarzameen' খুঁজে পাবে
-    search_pattern = '.*'.join(cleaned_query.split())
+    # প্রতিটি শব্দকে স্বাধীনভাবে খুঁজে বের করার জন্য এই প্যাটার্ন তৈরি করা হয়েছে।
+    # \b নিশ্চিত করবে যে শব্দগুলো পূর্ণাঙ্গ শব্দ হিসেবে ম্যাচ করে এবং .* শব্দের মাঝে যেকোনো কিছু ম্যাচ করে।
+    search_pattern = r'\b' + r'\b.*\b'.join(re.escape(word) for word in cleaned_query_parts) + r'\b'
     search_regex = re.compile(search_pattern, re.IGNORECASE)
+
+    LOGGER.info(f"Searching for cleaned query: '{' '.join(cleaned_query_parts)}' with Regex pattern: '{search_pattern}'")
 
     try:
         # ডাটাবেসে title_lower ফিল্ডে সরাসরি Regex দিয়ে সার্চ করা হচ্ছে
         results_cursor = movie_info_db.find({'title_lower': search_regex}).limit(10)
         results = await results_cursor.to_list(length=None)
         
-        LOGGER.info(f"Regex search for '{cleaned_query}' (pattern: '{search_pattern}') found {len(results)} results.")
+        LOGGER.info(f"Regex search for '{query}' found {len(results)} results.")
 
     except Exception as e:
-        LOGGER.error(f"Database find error: {e}")
+        LOGGER.error(f"Database find error for query '{query}': {e}")
         await message.reply_text("⚠️ Bot is facing a database issue. Please report to the admin.")
         return
 
     if not results:
         if message.chat.type == ChatType.PRIVATE:
             await message.reply_text(f"❌ **Movie Not Found!**\n\nCould not find any movie matching '*{query}*'. Please check the spelling.")
+        else:
+            # গ্রুপ চ্যাটে নট ফাউন্ড মেসেজ না দিয়ে silence থাকতে পারে, বা একটি সংক্ষিপ্ত মেসেজ
+            pass # অথবা await message.reply_text("❌ No movie found.", quote=True)
         return
     
     # ফলাফল প্রদর্শন
@@ -224,3 +237,4 @@ if __name__ == "__main__":
     LOGGER.info("The Don is waking up... (Reliable Regex Search Mode)")
     app.run()
     LOGGER.info("The Don is resting...")
+
