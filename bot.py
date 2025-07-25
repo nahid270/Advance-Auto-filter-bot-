@@ -1,5 +1,5 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v4.5 - Final with Error Fix)                        ||
+# ||      GODFATHER MOVIE BOT (v4.6 - Final Stable Version)                        ||
 # ||---------------------------------------------------------------------------------||
 # || এই সংস্করণে গ্রুপ ও প্রাইভেট চ্যাটের সমস্ত মেসেজ অটো-ডিলিট করা হবে।            ||
 # || গ্রুপে সার্চ করে মুভি না পেলে বট চুপ থাকবে এবং প্রাইভেটে রিপ্লাই দেবে।        ||
@@ -103,40 +103,21 @@ async def flexible_save_movie_quality(client, message):
             language = "Bangla" if lang in ["bangla", "bengali"] else lang.capitalize()
             break
     
-    # ডাটাবেসে মুভির তথ্য সেভ করা
     query = {"title_lower": clean_title.lower()}
     if year: query["year"] = year
-    movie_doc = await movie_info_db.find_one_and_update(
-        query,
-        {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}},
-        upsert=True,
-        return_document=True
-    )
-    # ডাটাবেসে ফাইলের তথ্য সেভ করা
+    movie_doc = await movie_info_db.find_one_and_update(query, {"$setOnInsert": {"title": clean_title, "year": year, "title_lower": clean_title.lower()}}, upsert=True, return_document=True)
+    
     file_info = message.video or message.document
-    await files_db.update_one(
-        {"movie_id": movie_doc['_id'], "quality": quality, "language": language},
-        {"$set": {"file_id": file_info.file_id, "chat_id": message.chat.id, "msg_id": message.id}},
-        upsert=True
-    )
+    await files_db.update_one({"movie_id": movie_doc['_id'], "quality": quality, "language": language}, {"$set": {"file_id": file_info.file_id, "chat_id": message.chat.id, "msg_id": message.id}}, upsert=True)
+    
     log_year = f"({year})" if year else "(No Year)"
     LOGGER.info(f"✅ Indexed: {clean_title} {log_year} [{quality} - {language}]")
 
 # ========= 👮 অ্যাডমিন কমান্ড ========= #
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
-    total_users, total_movies, total_files = await asyncio.gather(
-        users_db.count_documents({}),
-        movie_info_db.count_documents({}),
-        files_db.count_documents({})
-    )
-    await message.reply_text(
-        f"📊 **Bot Stats**\n\n"
-        f"👥 Users: `{total_users}`\n"
-        f"🎬 Movies: `{total_movies}`\n"
-        f"📁 Files: `{total_files}`\n\n"
-        f"📢 **Indexing Channel:** `{FILE_CHANNEL_ID}`"
-    )
+    total_users, total_movies, total_files = await asyncio.gather(users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({}))
+    await message.reply_text(f"📊 **Bot Stats**\n\n👥 Users: `{total_users}`\n🎬 Movies: `{total_movies}`\n📁 Files: `{total_files}`\n\n📢 **Indexing Channel:** `{FILE_CHANNEL_ID}`")
 
 # ========= 🤖 স্টার্ট এবং কলব্যাক হ্যান্ডলার ========= #
 @app.on_message(filters.private & filters.command("start"))
@@ -144,7 +125,6 @@ async def start_handler(client, message):
     user_id = message.from_user.id
     await users_db.update_one({"_id": user_id}, {"$set": {"name": message.from_user.first_name}}, upsert=True)
     
-    # ডীপ লিঙ্কিং হ্যান্ডেল করা (ভেরিফিকেশনের পর ফাইল পাঠানোর জন্য)
     if len(message.command) > 1:
         try:
             payload = message.command[1]
@@ -166,10 +146,7 @@ async def start_handler(client, message):
                                      f"🌐 **Language:** {file_doc['language']}\n\n"
                                      f"🙏 Thank you for using our bot!")
                     
-                    movie_msg = await client.copy_message(
-                        chat_id=user_id, from_chat_id=file_doc['chat_id'],
-                        message_id=file_doc['msg_id'], caption=final_caption
-                    )
+                    movie_msg = await client.copy_message(chat_id=user_id, from_chat_id=file_doc['chat_id'], message_id=file_doc['msg_id'], caption=final_caption)
                     warning_msg = await message.reply_text(f"❗ ফাইলটি **{DELETE_DELAY // 60} মিনিট** পর অটো-ডিলিট হয়ে যাবে।", quote=True)
                     asyncio.create_task(delete_messages_after_delay([movie_msg, warning_msg], DELETE_DELAY))
         except Exception as e:
@@ -177,7 +154,7 @@ async def start_handler(client, message):
             await message.reply_text("🤔 লিঙ্কটি সম্ভবত inválid বা মেয়াদোত্তীর্ণ।")
     else:
         reply_msg = await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
-        asyncio.create_task(delete_messages_after_delay([message, reply_msg], 120)) # ২ মিনিট পর ডিলিট হবে
+        asyncio.create_task(delete_messages_after_delay([message, reply_msg], 120))
 
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
@@ -185,7 +162,6 @@ async def callback_handler(client, callback_query):
     
     if data.startswith("showqual_"):
         movie_id = ObjectId(data.split("_", 1)[1])
-        # কোয়ালিটি লিস্ট মেসেজটি ১৫ মিনিট থাকবে
         new_msg = await show_quality_options(callback_query.message, movie_id, is_edit=True, return_message=True)
         if new_msg:
             asyncio.create_task(delete_messages_after_delay([new_msg], DELETE_DELAY))
@@ -194,17 +170,14 @@ async def callback_handler(client, callback_query):
         file_id_str = data.split("_", 1)[1]
         encoded_data = base64.urlsafe_b64encode(f'file_{file_id_str}_{user_id}'.encode()).decode()
         verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
-        await callback_query.message.edit_reply_markup(
-            InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=verification_url)]])
-        )
+        await callback_query.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=verification_url)]]))
     
     await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False, return_message=False):
-    """মুভির কোয়ালিটি অপশন দেখায়"""
     reply_msg = None
     try:
-        files = await files_db.find({"movie_id": movie_id}).to_list(length=None)
+        files = await files_db.find({"movie_id": movie_id}).sort("quality").to_list(length=None)
         if not files:
             text = "দুঃখিত, এই মুভির জন্য কোনো ফাইল পাওয়া যায়নি।"
             reply_msg = await message.edit_text(text) if is_edit else await message.reply_text(text)
@@ -218,8 +191,7 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
 
         display_year = f"({movie['year']})" if movie.get('year') else ""
         text = f"🎬 **{movie['title']} {display_year}**\n\n👇 আপনার পছন্দের কোয়ালিটি বেছে নিন:"
-        buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] 
-                   for f in sorted(files, key=lambda x: x.get('quality', ''))]
+        buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
         
         markup = InlineKeyboardMarkup(buttons)
         if is_edit:
@@ -230,23 +202,22 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
         
         return reply_msg if return_message else None
 
-    except MessageNotModified:
-        return message if return_message else None
-    except Exception as e:
-        LOGGER.error(f"Show quality options error: {e}")
-        return None
+    except MessageNotModified: return message if return_message else None
+    except Exception as e: LOGGER.error(f"Show quality options error: {e}"); return None
 
 # ========= 🔎 চূড়ান্ত Regex সার্চ হ্যান্ডলার (গ্রুপে সাইলেন্ট, প্রাইভেটে রেসপন্সিভ) ========= #
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command) # <<<--- এখানে সংশোধন করা হয়েছে
+@app.on_message((filters.private | filters.group) & filters.text) # <<<--- ফিল্টারটি সহজ করা হয়েছে
 async def reliable_search_handler(client, message):
-    if message.from_user.is_bot: return
+    # <<<--- ফাংশনের ভেতরে কমান্ড চেক করা হচ্ছে, এটি সবচেয়ে নির্ভরযোগ্য উপায় ---<<<
+    if message.text and message.text.startswith('/'):
+        return
+    if message.from_user.is_bot: 
+        return
 
     query = message.text.strip()
-    # শুধুমাত্র অক্ষর ও সংখ্যা নিয়ে সার্চ কোয়েরি তৈরি করা
     cleaned_query = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', query.lower()))
     if not cleaned_query: return
     
-    # फ्लेক্সিবল সার্চের জন্য Regex প্যাটার্ন তৈরি
     search_pattern = '.*'.join(cleaned_query.split())
     search_regex = re.compile(search_pattern, re.IGNORECASE)
     
@@ -258,7 +229,6 @@ async def reliable_search_handler(client, message):
         LOGGER.info(f"Search for '{cleaned_query}' in chat {message.chat.id} ({message.chat.type.name}) found {len(results)} results.")
     except Exception as e:
         LOGGER.error(f"Database find error: {e}")
-        # শুধুমাত্র প্রাইভেট চ্যাটে ডাটাবেস এরর দেখানো ভালো
         if message.chat.type == ChatType.PRIVATE:
             reply_msg = await message.reply_text("⚠️ বট একটি ডাটাবেস সমস্যার সম্মুখীন হয়েছে।")
             messages_to_delete.append(reply_msg)
@@ -266,41 +236,26 @@ async def reliable_search_handler(client, message):
         return
 
     if not results:
-        # শুধুমাত্র প্রাইভেট চ্যাটে "Not Found" মেসেজ পাঠানো হবে
         if message.chat.type == ChatType.PRIVATE:
-            reply_msg = await message.reply_text(
-                "❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\n"
-                "অনুগ্রহ করে নামের বানানটি পরীক্ষা করে আবার চেষ্টা করুন।",
-                quote=True
-            )
+            reply_msg = await message.reply_text("❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\nঅনুগ্রহ করে নামের বানানটি পরীক্ষা করে আবার চেষ্টা করুন।", quote=True)
             messages_to_delete.append(reply_msg)
-        # গ্রুপে কোনো ফলাফল না পাওয়া গেলে বট চুপ থাকবে।
-
     elif len(results) == 1:
         reply_msg = await show_quality_options(message, results[0]['_id'], return_message=True)
-        if reply_msg:
-            messages_to_delete.append(reply_msg)
-            
-    else: # len(results) > 1
+        if reply_msg: messages_to_delete.append(reply_msg)
+    else:
         buttons = []
         for movie in results:
             display_year = f"({movie['year']})" if movie.get('year') else ""
             buttons.append([InlineKeyboardButton(f"🎬 {movie['title']} {display_year}", callback_data=f"showqual_{movie['_id']}")])
         
-        reply_msg = await message.reply_text(
-            "🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            quote=True
-        )
+        reply_msg = await message.reply_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
         messages_to_delete.append(reply_msg)
     
-    # সমস্ত প্রাসঙ্গিক মেসেজ (সার্চ, রিপ্লাই) ডিলিট করার জন্য শিডিউল করা
     if messages_to_delete:
         asyncio.create_task(delete_messages_after_delay(messages_to_delete, DELETE_DELAY))
 
 # ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
 def run_web_server():
-    """Flask ওয়েব সার্ভার একটি আলাদা থ্রেডে রান করে"""
     web_app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
@@ -308,6 +263,6 @@ if __name__ == "__main__":
     web_thread = Thread(target=run_web_server)
     web_thread.start()
     
-    LOGGER.info("The Don is waking up... (v4.5 Final - Error Fix)")
+    LOGGER.info("The Don is waking up... (v4.6 Final Stable Version)")
     app.run()
     LOGGER.info("The Don is resting...")
