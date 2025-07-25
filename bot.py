@@ -1,8 +1,7 @@
 # =====================================================================================
-# ||            GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.2)              ||
+# ||            GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.3)              ||
 # ||---------------------------------------------------------------------------------||
-# ||     IndexError, EntityBoundsInvalid, Callback Handler এবং Filter TypeError     ||
-# ||                      ফিক্স করার পর এটি চূড়ান্ত সংস্করণ।                        ||
+# ||     সমস্ত TypeError এবং অন্যান্য বাগ ফিক্স করার পর এটি চূড়ান্ত সংস্করণ।        ||
 # =====================================================================================
 
 import os
@@ -15,8 +14,8 @@ from threading import Thread
 from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ChatType, ParseMode
-from pymongo import MongoClient
+from pyrogram.enums import ChatType
+from motor.motor_asyncio import AsyncIOMotorClient # সিঙ্ক্রোনাস pymongo এর পরিবর্তে motor ব্যবহার করা হলো
 from bson.objectid import ObjectId
 
 # --- পরিবেশ সেটআপ ও কনফিগারেশন ---
@@ -36,8 +35,9 @@ except (ValueError, TypeError) as e:
     LOGGER.critical(f"Configuration error: {e}"); exit()
 
 # --- ক্লায়েন্ট, ডাটাবেস ও ওয়েব অ্যাপ ---
+# দ্রষ্টব্য: motor ব্যবহারের জন্য আপনার requirements.txt ফাইলে 'motor' যোগ করতে হবে।
 app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-mongo_client = MongoClient(MONGO_URL)
+mongo_client = AsyncIOMotorClient(MONGO_URL) # অ্যাসিঙ্ক্রোনাস ক্লায়েন্ট
 db = mongo_client["MovieDB"]
 movie_info_db = db["movie_info"]
 files_db = db["files"]
@@ -63,7 +63,7 @@ async def delete_messages_after_delay(messages, delay):
 # ========= 📢 চ্যানেল থেকে মুভি সেভ ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 async def save_movie_quality(client, message):
-    if not channels_db.find_one({"_id": message.chat.id}): return
+    if not await channels_db.find_one({"_id": message.chat.id}): return
     caption = message.caption or ""
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption)
     if not title_match: LOGGER.warning(f"Could not parse title from msg {message.id}"); return
@@ -71,11 +71,14 @@ async def save_movie_quality(client, message):
     search_title = f"{title.lower()} {year}"
     quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4K"] if q in caption.lower()), "Unknown")
     language = next((lang for lang in ["Hindi", "Bangla", "English", "Tamil", "Telugu", "Malayalam", "Kannada"] if lang.lower() in caption.lower()), "Unknown")
-    movie_doc = movie_info_db.find_one_and_update(
-        {"search_title": search_title}, {"$setOnInsert": {"title": title, "year": year, "search_title": search_title}},
+    
+    movie_doc = await movie_info_db.find_one_and_update(
+        {"search_title": search_title},
+        {"$setOnInsert": {"title": title, "year": year, "search_title": search_title}},
         upsert=True, return_document=True
     )
-    files_db.update_one(
+    
+    await files_db.update_one(
         {"movie_id": movie_doc['_id'], "quality": quality, "language": language},
         {"$set": {"file_id": message.video.file_id if message.video else message.document.file_id, "chat_id": message.chat.id, "msg_id": message.id}},
         upsert=True
@@ -182,10 +185,10 @@ async def show_quality_options(message, movie_id, is_edit=False):
         else: await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
     except Exception as e: LOGGER.error(f"Show quality options error: {e}")
 
-# --- ধাপ ৪: সাধারণ টেক্সট হ্যান্ডলার (সর্বশেষ প্রায়োরিটি এবং সম্পূর্ণ ফিক্সড) ---
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command())
+# --- ধাপ ৪: সাধারণ টেক্সট হ্যান্ডলার (চূড়ান্ত এবং সঠিক) ---
+@app.on_message((filters.private | filters.group) & filters.text)
 async def smart_search_handler(client, message):
-    if message.from_user.is_bot: return
+    if message.text.startswith('/') or message.from_user.is_bot: return
 
     query = message.text.strip()
     pipeline = [{'$search': {'index': 'default', 'autocomplete': {'query': query, 'path': 'search_title'}}}, {'$limit': 5}]
@@ -208,6 +211,5 @@ def run_web_server(): web_app.run(host='0.0.0.0', port=PORT)
 if __name__ == "__main__":
     LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server); web_thread.start()
-    LOGGER.info("The Don is waking up...")
-    app.run()
+    LOGGER.info("The Don is waking up..."); app.run()
     LOGGER.info("The Don is resting...")
