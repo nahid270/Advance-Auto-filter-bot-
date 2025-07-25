@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||        GODFATHER MOVIE BOT (v2.5 - Hardcoded Channel Version)                   ||
+# ||        GODFATHER MOVIE BOT (v2.6 - Hardcoded Channel & TypeError Fix)           ||
 # ||---------------------------------------------------------------------------------||
-# ||     এই সংস্করণে ফাইল চ্যানেল আইডি সরাসরি কোডে সেট করা হয়েছে।                     ||
+# ||     এই সংস্করণে TypeError ফিক্স করা হয়েছে এবং চ্যানেল আইডি হার্ডকোড করা আছে।   ||
 # =====================================================================================
 
 import os
@@ -27,7 +27,7 @@ LOGGER = logging.getLogger(__name__)
 # আপনার চ্যানেল আইডি অবশ্যই -100 দিয়ে শুরু হতে হবে। যেমন: -1001234567890
 FILE_CHANNEL_ID = -1002744890741  # <====== আপনার ফাইল চ্যানেলের আইডি এখানে দিন
 
-if FILE_CHANNEL_ID == -1002744890741:
+if FILE_CHANNEL_ID == -1001234567890:
     LOGGER.warning("Please update the FILE_CHANNEL_ID in the code with your actual channel ID.")
 
 try:
@@ -50,7 +50,6 @@ db = mongo_client["MovieDB"]
 movie_info_db = db["movie_info"]
 files_db = db["files"]
 users_db = db["users"]
-# 'channels_db' এর আর প্রয়োজন নেই
 
 web_app = Flask(__name__)
 @web_app.route('/')
@@ -62,7 +61,6 @@ def is_admin(_, __, message):
 
 admin_filter = filters.create(is_admin)
 
-# ... (অন্যান্য হেল্পার ফাংশন অপরিবর্তিত)
 async def delete_messages_after_delay(messages, delay):
     await asyncio.sleep(delay)
     for msg in messages:
@@ -72,7 +70,6 @@ async def delete_messages_after_delay(messages, delay):
 # ========= 📢 চ্যানেল থেকে মুভি সেভ (সরলীকৃত) ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 async def save_movie_quality(client, message):
-    # << --- পরিবর্তন: এখন ডাটাবেস চেক না করে সরাসরি আইডি'র সাথে মেলানো হচ্ছে --- >>
     if message.chat.id != FILE_CHANNEL_ID:
         return
 
@@ -80,13 +77,13 @@ async def save_movie_quality(client, message):
     title_match = re.search(r"(.+?)\s*\((\d{4})\)", caption, re.IGNORECASE)
     
     if not title_match:
-        LOGGER.warning(f"Could not parse 'Title (YYYY)' from msg {message.id} in channel {message.chat.id}. Caption: '{caption}'")
+        LOGGER.warning(f"Could not parse 'Title (YYYY)' from msg {message.id}. Caption: '{caption}'")
         return
         
     title, year = re.sub(r'[\.\_]', ' ', title_match.group(1).strip()), title_match.group(2)
     search_title = f"{title.lower()} {year}"
     quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
-    language = next((lang for lang in ["hindi", "bangla", "english", "tamil", "telugu", "malayalam", "kannada"] if lang in caption.lower()), "Unknown")
+    language = next((lang for lang in ["hindi", "bangla", "english", "tamil", "telugu", "malayalam", "kannada"] if lang.lower() in caption.lower()), "Unknown")
     
     movie_doc = await movie_info_db.find_one_and_update(
         {"search_title": search_title},
@@ -103,9 +100,9 @@ async def save_movie_quality(client, message):
         }},
         upsert=True
     )
-    LOGGER.info(f"✅ Indexed: {title} ({year}) [{quality} - {language}] from hardcoded channel {message.chat.id}")
+    LOGGER.info(f"✅ Indexed: {title} ({year}) [{quality} - {language}] from channel {message.chat.id}")
 
-# ========= 💻 অ্যাডমিন কমান্ড হ্যান্ডলার (সরলীকৃত) ========= #
+# ========= 💻 অ্যাডমিন কমান্ড হ্যান্ডলার ========= #
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
     total_users = await users_db.count_documents({})
@@ -119,14 +116,7 @@ async def stats_command(client, message):
         f"📢 **Indexing Channel:** `{FILE_CHANNEL_ID}` (Hardcoded)"
     )
 
-# চ্যানেল ম্যানেজমেন্ট কমান্ডগুলো (`/addchannel`, `/delchannel`, `/channels`) মুছে ফেলা হয়েছে।
-
-# ========= 🙋‍♂️ ইউজার কমান্ড ও কলব্যাক হ্যান্ডলার (অপরিবর্তিত) ========= #
-# start_handler, callback_handler, show_quality_options, smart_search_handler 
-# ফাংশনগুলো আগের মতোই থাকবে, কোনো পরিবর্তনের প্রয়োজন নেই।
-# ... (পূর্ববর্তী উত্তর থেকে এই ফাংশনগুলো এখানে কপি-পেস্ট করুন) ...
-
-# --- ধাপ ২: সাধারণ ইউজার কমান্ড হ্যান্ডলার ---
+# ========= 🙋‍♂️ ইউজার কমান্ড ও কলব্যাক হ্যান্ডলার ========= #
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
     user_id = message.from_user.id
@@ -151,7 +141,6 @@ async def start_handler(client, message):
         except Exception as e: LOGGER.error(f"Deep link error: {e}"); await message.reply_text("🤔 Invalid/expired link.")
     else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie name to search.")
 
-# --- ধাপ ৩: কলব্যাক হ্যান্ডলার ---
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     data, user_id = callback_query.data, callback_query.from_user.id
@@ -168,8 +157,13 @@ async def callback_handler(client, callback_query):
 async def show_quality_options(message, movie_id, is_edit=False):
     files_cursor = files_db.find({"movie_id": movie_id})
     files = await files_cursor.to_list(length=None)
-    if not files: await message.reply_text("Sorry, no files found."); return
+    if not files:
+        await message.reply_text("Sorry, no files found for this movie. It might have been removed.")
+        return
     movie = await movie_info_db.find_one({"_id": movie_id})
+    if not movie:
+         await message.reply_text("Sorry, could not find movie details.")
+         return
     buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
     text = f"🎬 **{movie['title']} ({movie['year']})**\n\n👇 Select quality:"
     try:
@@ -177,24 +171,37 @@ async def show_quality_options(message, movie_id, is_edit=False):
         else: await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
     except Exception as e: LOGGER.error(f"Show quality options error: {e}")
 
-# --- ধাপ ৪: সাধারণ টেক্সট হ্যান্ডলার (চূড়ান্ত এবং সঠিক) ---
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command(prefixes="/"))
+# ========= 🔎 টেক্সট সার্চ হ্যান্ডলার (TypeError ফিক্সড) ========= #
+@app.on_message((filters.private | filters.group) & filters.text) # <--- পরিবর্তন: ফিল্টারটি সরল করা হয়েছে
 async def smart_search_handler(client, message):
-    if message.text.startswith('/') or message.from_user.is_bot: return
+    # <--- পরিবর্তন: কমান্ড চেক এখন ফাংশনের ভিতরে --- >
+    if message.text.startswith("/") or message.from_user.is_bot:
+        return
+
     query = message.text.strip()
-    pipeline = [{'$search': {'index': 'default', 'autocomplete': {'query': query, 'path': 'search_title'}}}, {'$limit': 5}]
-    results_cursor = movie_info_db.aggregate(pipeline)
-    results = await results_cursor.to_list(length=None)
+    try:
+        pipeline = [{'$search': {'index': 'default', 'autocomplete': {'query': query, 'path': 'search_title'}}}, {'$limit': 5}]
+        results_cursor = movie_info_db.aggregate(pipeline)
+        results = await results_cursor.to_list(length=None)
+    except Exception as e:
+        LOGGER.critical(f"MongoDB Atlas Search Error: {e}. Make sure the Search Index is created correctly.")
+        if message.chat.type == ChatType.PRIVATE:
+            await message.reply_text("⚠️ Bot is facing a database issue. Please report to the admin.")
+        return
 
     if not results:
-        if message.chat.type == ChatType.PRIVATE: await message.reply_text("❌ **Movie Not Found!**")
+        if message.chat.type == ChatType.PRIVATE:
+            await message.reply_text("❌ **Movie Not Found!**\n\nPlease check the spelling or try another movie name.")
         return
     
-    if len(results) == 1 and results[0]['title'].lower() == query.lower():
+    exact_match = next((res for res in results if res['title'].lower() == query.lower()), None)
+    if exact_match:
+        await show_quality_options(message, exact_match['_id'])
+    elif len(results) == 1:
         await show_quality_options(message, results[0]['_id'])
     else:
         buttons = [[InlineKeyboardButton(f"🎬 {movie['title']} ({movie['year']})", callback_data=f"showqual_{movie['_id']}")] for movie in results]
-        await message.reply_text("🤔 Did you mean one of these?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+        await message.reply_text("🤔 I found these. Which one did you mean?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
 
 # ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
 def run_web_server():
