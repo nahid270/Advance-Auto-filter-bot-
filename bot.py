@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||                  GODFATHER MOVIE BOT (100% Final & Stable Version)              ||
+# ||                  GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.0)        ||
 # ||---------------------------------------------------------------------------------||
-# || TypeError সম্পূর্ণভাবে ফিক্স করার পর এটি চূড়ান্ত সংস্করণ।                           ||
+# || IndexError এবং EntityBoundsInvalid ফিক্স করার পর এটি চূড়ান্ত সংস্করণ।           ||
 # =====================================================================================
 
 import os
@@ -14,7 +14,7 @@ from threading import Thread
 from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ChatType
+from pyrogram.enums import ChatType, ParseMode # ParseMode ইম্পোর্ট করা হয়েছে
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
@@ -24,13 +24,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 LOGGER = logging.getLogger(__name__)
 
 try:
-    API_ID = int(os.environ.get("API_ID"))
-    API_HASH = os.environ.get("API_HASH")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")
-    MONGO_URL = os.environ.get("MONGO_URL")
-    AD_PAGE_URL = os.environ.get("AD_PAGE_URL")
+    API_ID, API_HASH, BOT_TOKEN, MONGO_URL, AD_PAGE_URL, BOT_USERNAME = (
+        int(os.environ.get("API_ID")), os.environ.get("API_HASH"), os.environ.get("BOT_TOKEN"),
+        os.environ.get("MONGO_URL"), os.environ.get("AD_PAGE_URL"), os.environ.get("BOT_USERNAME", "YourBotUsername")
+    )
     ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(',')]
-    BOT_USERNAME = os.environ.get("BOT_USERNAME", "YourBotUsername")
     PORT = int(os.environ.get("PORT", 8080))
     DELETE_DELAY = 15 * 60
 except (ValueError, TypeError) as e:
@@ -51,7 +49,7 @@ def health_check(): return "Bot is alive!"
 
 # ========= 📄 হেল্পার ফাংশন ও ফিল্টার ========= #
 def is_admin(_, __, message):
-    return message.from_user.id in ADMIN_IDS
+    return message.from_user and message.from_user.id in ADMIN_IDS
 
 admin_filter = filters.create(is_admin)
 
@@ -90,7 +88,6 @@ async def save_movie_quality(client, message):
 # --- ধাপ ১: অ্যাডমিন কমান্ড হ্যান্ডলার ---
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
-    # ... (আপনার stats কমান্ডের কোড অপরিবর্তিত) ...
     total_users = users_db.count_documents({})
     total_movies = movie_info_db.count_documents({})
     total_files = files_db.count_documents({})
@@ -99,27 +96,36 @@ async def stats_command(client, message):
 
 @app.on_message(filters.command("addchannel") & admin_filter)
 async def add_channel_command(_, message):
-    # ... (আপনার addchannel কমান্ডের কোড অপরিবর্তিত) ...
     try:
         channel_id = int(message.text.split(None, 1)[1])
-        if channels_db.find_one({"_id": channel_id}): await message.reply("⚠️ Already authorized.")
-        else: channels_db.insert_one({"_id": channel_id}); await message.reply(f"✅ Channel `{channel_id}` added.")
-    except (IndexError, ValueError): await message.reply("❌ Usage: `/addchannel <id>`")
+        if channels_db.find_one({"_id": channel_id}):
+            await message.reply("⚠️ This channel is already authorized.")
+        else:
+            channels_db.insert_one({"_id": channel_id})
+            await message.reply(f"✅ Channel `{channel_id}` has been added.")
+    except IndexError:
+        # *** পরিবর্তন ১: Markdown ফরম্যাটিং সরানো হয়েছে ***
+        await message.reply("❌ Usage: /addchannel <channel_id>")
+    except ValueError:
+        await message.reply("❌ Invalid Channel ID. Please provide a numeric ID.")
 
 @app.on_message(filters.command("delchannel") & admin_filter)
 async def del_channel_command(_, message):
-    # ... (আপনার delchannel কমান্ডের কোড অপরিবর্তিত) ...
     try:
         channel_id = int(message.text.split(None, 1)[1])
-        if channels_db.delete_one({"_id": channel_id}).deleted_count: await message.reply(f"✅ Channel `{channel_id}` removed.")
-        else: await message.reply("⚠️ Not found.")
-    except (IndexError, ValueError): await message.reply("❌ Usage: `/delchannel <id>`")
+        if channels_db.delete_one({"_id": channel_id}).deleted_count:
+            await message.reply(f"✅ Channel `{channel_id}` has been removed.")
+        else:
+            await message.reply("⚠️ Channel not found in the authorized list.")
+    except IndexError:
+        await message.reply("❌ Usage: /delchannel <channel_id>")
+    except ValueError:
+        await message.reply("❌ Invalid Channel ID.")
 
 @app.on_message(filters.command("channels") & admin_filter)
 async def list_channels_command(_, message):
-    # ... (আপনার channels কমান্ডের কোড অপরিবর্তিত) ...
     channels = list(channels_db.find({}))
-    if not channels: return await message.reply("No channels authorized.")
+    if not channels: return await message.reply("No channels have been authorized yet.")
     text = "📄 **Authorized Channels:**\n\n" + "\n".join([f"• `{ch['_id']}`" for ch in channels])
     await message.reply(text)
 
@@ -149,7 +155,7 @@ async def start_handler(client, message):
     else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie name to search.")
 
 # --- ধাপ ৩: কলব্যাক হ্যান্ডলার ---
-@app.on_callback_query()
+@app.on_message(filters.callback_query)
 async def callback_handler(client, callback_query):
     # ... (আপনার callback_handler কোড অপরিবর্তিত) ...
     data, user_id = callback_query.data, callback_query.from_user.id
@@ -176,12 +182,8 @@ async def show_quality_options(message, movie_id, is_edit=False):
     except Exception as e: LOGGER.error(f"Show quality options error: {e}")
 
 # --- ধাপ ৪: সাধারণ টেক্সট হ্যান্ডলার (সর্বশেষ প্রায়োরিটি এবং সম্পূর্ণ ফিক্সড) ---
-@app.on_message((filters.private | filters.group) & filters.text)
+@app.on_message((filters.private | filters.group) & filters.text & ~filters.command)
 async def smart_search_handler(client, message):
-    # *** এখানে নতুন চেক যোগ করা হয়েছে ***
-    if message.text.startswith("/"):
-        return  # যদি মেসেজটি কোনো কমান্ড হয়, তাহলে এই হ্যান্ডলারটি কাজ করবে না।
-
     if message.from_user.is_bot: return
 
     query = message.text.strip()
