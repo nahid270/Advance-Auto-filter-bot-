@@ -1,7 +1,7 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v4.0 - Final, Polished & Self-Reliant)                ||
+# ||      GODFATHER MOVIE BOT (v4.1 - Final with Bengali Language Fix)               ||
 # ||---------------------------------------------------------------------------------||
-# ||     এটি চূড়ান্ত সংস্করণ। Atlas Search ছাড়াই নির্ভরযোগ্য সার্চ এবং সমস্ত বাগ ফিক্স করা হয়েছে।     ||
+# ||     এটি চূড়ান্ত সংস্করণ। Bengali ভাষা শনাক্তকরণ সমস্যা সমাধান করা হয়েছে।      ||
 # =====================================================================================
 
 import os
@@ -70,7 +70,7 @@ async def delete_messages_after_delay(messages, delay):
         except Exception: pass
 
 
-# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার ========= #
+# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার (Bengali শব্দ যোগ করা হয়েছে) ========= #
 @app.on_message(filters.channel & (filters.video | filters.document))
 async def flexible_save_movie_quality(client, message):
     if message.chat.id != FILE_CHANNEL_ID: return
@@ -85,7 +85,7 @@ async def flexible_save_movie_quality(client, message):
         year = title_match.group(2)
     else:
         # যদি সাল না পাওয়া যায়, তাহলে ক্যাপশনের শুরুটাকেই নাম হিসেবে ধরা হবে
-        stop_words = ['480p', '720p', '1080p', '2160p', '4k', 'hindi', 'english', 'dual', 'audio', 'web-dl', 'hdrip', 'bluray', 'webrip']
+        stop_words = ['480p', '720p', '1080p', '2160p', '4k', 'hindi', 'english', 'bangla', 'bengali', 'dual', 'audio', 'web-dl', 'hdrip', 'bluray', 'webrip']
         title_words = []
         for word in caption.split():
             # এই শব্দগুলো পেলে নাম শেষ বলে ধরে নেওয়া হবে
@@ -101,8 +101,20 @@ async def flexible_save_movie_quality(client, message):
     clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
     
     quality = next((q for q in ["480p", "720p", "1080p", "2160p", "4k"] if q in caption.lower()), "Unknown")
-    language = next((lang for lang in ["hindi", "bangla", "english", "tamil", "telugu", "malayalam", "kannada"] if lang.lower() in caption.lower()), "Unknown")
     
+    # --- ভাষা শনাক্ত করার চূড়ান্ত এবং সঠিক লজিক ---
+    languages_to_check = ["hindi", "bangla", "bengali", "english", "tamil", "telugu", "malayalam", "kannada"]
+    caption_lower = caption.lower()
+    language = "Unknown"
+
+    for lang in languages_to_check:
+        if lang in caption_lower:
+            if lang in ["bangla", "bengali"]:
+                language = "Bangla"
+            else:
+                language = lang.capitalize()
+            break # প্রথম যে ভাষা পাওয়া যাবে, সেটিই নেওয়া হবে
+
     query = {"title_lower": clean_title.lower()}
     if year: query["year"] = year
 
@@ -234,6 +246,6 @@ if __name__ == "__main__":
     LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server)
     web_thread.start()
-    LOGGER.info("The Don is waking up... (v4.0 Final - Self-Reliant Mode)")
+    LOGGER.info("The Don is waking up... (v4.1 Final - Self-Reliant Mode)")
     app.run()
     LOGGER.info("The Don is resting...")
