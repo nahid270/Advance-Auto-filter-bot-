@@ -1,8 +1,8 @@
 # =====================================================================================
-# ||            GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.1)              ||
+# ||            GODFATHER MOVIE BOT (100% Final & Bug-Free Version 2.2)              ||
 # ||---------------------------------------------------------------------------------||
-# ||     IndexError, EntityBoundsInvalid এবং Callback Handler ফিক্স করার পর          ||
-# ||                           এটি চূড়ান্ত সংস্করণ।                                 ||
+# ||     IndexError, EntityBoundsInvalid, Callback Handler এবং Filter TypeError     ||
+# ||                      ফিক্স করার পর এটি চূড়ান্ত সংস্করণ।                        ||
 # =====================================================================================
 
 import os
@@ -89,20 +89,20 @@ async def save_movie_quality(client, message):
 # --- ধাপ ১: অ্যাডমিন কমান্ড হ্যান্ডলার ---
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
-    total_users = users_db.count_documents({})
-    total_movies = movie_info_db.count_documents({})
-    total_files = files_db.count_documents({})
-    total_channels = channels_db.count_documents({})
+    total_users = await users_db.count_documents({})
+    total_movies = await movie_info_db.count_documents({})
+    total_files = await files_db.count_documents({})
+    total_channels = await channels_db.count_documents({})
     await message.reply_text(f"📊 **Bot Stats**\n\n👥 Users: `{total_users}`\n🎬 Movies: `{total_movies}`\n📁 Files: `{total_files}`\n📢 Channels: `{total_channels}`")
 
 @app.on_message(filters.command("addchannel") & admin_filter)
 async def add_channel_command(_, message):
     try:
         channel_id = int(message.text.split(None, 1)[1])
-        if channels_db.find_one({"_id": channel_id}):
+        if await channels_db.find_one({"_id": channel_id}):
             await message.reply("⚠️ This channel is already authorized.")
         else:
-            channels_db.insert_one({"_id": channel_id})
+            await channels_db.insert_one({"_id": channel_id})
             await message.reply(f"✅ Channel `{channel_id}` has been added.")
     except IndexError:
         await message.reply("❌ Usage: /addchannel <channel_id>")
@@ -113,7 +113,8 @@ async def add_channel_command(_, message):
 async def del_channel_command(_, message):
     try:
         channel_id = int(message.text.split(None, 1)[1])
-        if channels_db.delete_one({"_id": channel_id}).deleted_count:
+        result = await channels_db.delete_one({"_id": channel_id})
+        if result.deleted_count:
             await message.reply(f"✅ Channel `{channel_id}` has been removed.")
         else:
             await message.reply("⚠️ Channel not found in the authorized list.")
@@ -124,7 +125,8 @@ async def del_channel_command(_, message):
 
 @app.on_message(filters.command("channels") & admin_filter)
 async def list_channels_command(_, message):
-    channels = list(channels_db.find({}))
+    channels_cursor = channels_db.find({})
+    channels = await channels_cursor.to_list(length=None)
     if not channels: return await message.reply("No channels have been authorized yet.")
     text = "📄 **Authorized Channels:**\n\n" + "\n".join([f"• `{ch['_id']}`" for ch in channels])
     await message.reply(text)
@@ -133,7 +135,8 @@ async def list_channels_command(_, message):
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
     user_id = message.from_user.id
-    if not users_db.find_one({"_id": user_id}): users_db.insert_one({"_id": user_id, "name": message.from_user.first_name})
+    if not await users_db.find_one({"_id": user_id}):
+        await users_db.insert_one({"_id": user_id, "name": message.from_user.first_name})
     if len(message.command) > 1:
         try:
             payload = message.command[1]
@@ -143,9 +146,9 @@ async def start_handler(client, message):
             action, data_id, verified_user_id_str = parts
             if user_id != int(verified_user_id_str): return await message.reply_text("😡 Verification Failed!")
             if action == "file":
-                file_doc = files_db.find_one({"_id": ObjectId(data_id)})
+                file_doc = await files_db.find_one({"_id": ObjectId(data_id)})
                 if file_doc:
-                    movie_doc = movie_info_db.find_one({"_id": file_doc['movie_id']})
+                    movie_doc = await movie_info_db.find_one({"_id": file_doc['movie_id']})
                     final_caption = (f"🎬 **{movie_doc['title']} ({movie_doc['year']})**\n✨ **Quality:** {file_doc['quality']}\n🌐 **Language:** {file_doc['language']}\n\n🙏 Thank you!")
                     movie_msg = await client.copy_message(chat_id=user_id, from_chat_id=file_doc['chat_id'], message_id=file_doc['msg_id'], caption=final_caption)
                     warning_msg = await message.reply_text(f"❗ File auto-deletes in **{DELETE_DELAY // 60} mins**.", quote=True)
@@ -154,7 +157,7 @@ async def start_handler(client, message):
     else: await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie name to search.")
 
 # --- ধাপ ৩: কলব্যাক হ্যান্ডলার ---
-@app.on_callback_query()  # <-- মূল পরিবর্তন এখানে: on_message এর পরিবর্তে on_callback_query ব্যবহৃত হয়েছে
+@app.on_callback_query()
 async def callback_handler(client, callback_query):
     data, user_id = callback_query.data, callback_query.from_user.id
     if data.startswith("showqual_"):
@@ -168,9 +171,10 @@ async def callback_handler(client, callback_query):
     await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False):
-    files = list(files_db.find({"movie_id": movie_id}))
+    files_cursor = files_db.find({"movie_id": movie_id})
+    files = await files_cursor.to_list(length=None)
     if not files: await message.reply_text("Sorry, no files found."); return
-    movie = movie_info_db.find_one({"_id": movie_id})
+    movie = await movie_info_db.find_one({"_id": movie_id})
     buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
     text = f"🎬 **{movie['title']} ({movie['year']})**\n\n👇 Select quality:"
     try:
@@ -179,13 +183,14 @@ async def show_quality_options(message, movie_id, is_edit=False):
     except Exception as e: LOGGER.error(f"Show quality options error: {e}")
 
 # --- ধাপ ৪: সাধারণ টেক্সট হ্যান্ডলার (সর্বশেষ প্রায়োরিটি এবং সম্পূর্ণ ফিক্সড) ---
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command)
+@app.on_message((filters.private | filters.group) & filters.text & ~filters.command())
 async def smart_search_handler(client, message):
     if message.from_user.is_bot: return
 
     query = message.text.strip()
     pipeline = [{'$search': {'index': 'default', 'autocomplete': {'query': query, 'path': 'search_title'}}}, {'$limit': 5}]
-    results = list(movie_info_db.aggregate(pipeline))
+    results_cursor = movie_info_db.aggregate(pipeline)
+    results = await results_cursor.to_list(length=None)
 
     if not results:
         if message.chat.type == ChatType.PRIVATE: await message.reply_text("❌ **Movie Not Found!**")
@@ -203,5 +208,6 @@ def run_web_server(): web_app.run(host='0.0.0.0', port=PORT)
 if __name__ == "__main__":
     LOGGER.info("Starting web server...")
     web_thread = Thread(target=run_web_server); web_thread.start()
-    LOGGER.info("The Don is waking up..."); app.run()
+    LOGGER.info("The Don is waking up...")
+    app.run()
     LOGGER.info("The Don is resting...")
