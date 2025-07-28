@@ -1,12 +1,14 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v4.6 - Final Stable Version)                        ||
+# ||      GODFATHER MOVIE BOT (v4.7 - Pagination Update)                           ||
 # ||---------------------------------------------------------------------------------||
 # || এই সংস্করণে গ্রুপ ও প্রাইভেট চ্যাটের সমস্ত মেসেজ অটো-ডিলিট করা হবে।            ||
 # || গ্রুপে সার্চ করে মুভি না পেলে বট চুপ থাকবে এবং প্রাইভেটে রিপ্লাই দেবে।        ||
+# || সার্চ রেজাল্টে পেজিনেশন (পৃষ্ঠা নম্বর) যুক্ত করা হয়েছে।                         ||
 # =====================================================================================
 
 import os
 import re
+import math
 import base64
 import logging
 import asyncio
@@ -40,6 +42,7 @@ try:
     ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(',') if id.strip()]
     PORT = int(os.environ.get("PORT", 8080))
     DELETE_DELAY = 15 * 60  # 15 মিনিট
+    SEARCH_PAGE_SIZE = 8 # <--- নতুন সংযোজন: প্রতি পৃষ্ঠায় দেখানো রেজাল্টের সংখ্যা
 except (ValueError, TypeError) as e:
     LOGGER.critical(f"Configuration error in environment variables: {e}")
     exit()
@@ -156,10 +159,39 @@ async def start_handler(client, message):
         reply_msg = await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
         asyncio.create_task(delete_messages_after_delay([message, reply_msg], 120))
 
+# <--- নতুন সংযোজন: সার্চ রেজাল্টের জন্য পেজিনেশন বাটন তৈরি করার ফাংশন --->
+def build_search_results_markup(results, query, current_page, total_count):
+    """সার্চ রেজাল্টের জন্য ইনলাইন কিবোর্ড মার্কআপ তৈরি করে, পেজিনেশন সহ।"""
+    buttons = []
+    for movie in results:
+        display_year = f"({movie['year']})" if movie.get('year') else ""
+        buttons.append([InlineKeyboardButton(f"🎬 {movie['title']} {display_year}", callback_data=f"showqual_{movie['_id']}")])
+    
+    # পেজিনেশন বাটন যুক্ত করা
+    if total_count > SEARCH_PAGE_SIZE:
+        nav_buttons = []
+        total_pages = math.ceil(total_count / SEARCH_PAGE_SIZE)
+        
+        if current_page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ আগের পাতা", callback_data=f"nav_{current_page-1}_{query}"))
+        
+        nav_buttons.append(InlineKeyboardButton(f"📄 {current_page+1}/{total_pages} 📄", callback_data="noop")) # No operation button
+
+        if (current_page + 1) * SEARCH_PAGE_SIZE < total_count:
+            nav_buttons.append(InlineKeyboardButton("পরের পাতা ➡️", callback_data=f"nav_{current_page+1}_{query}"))
+        
+        buttons.append(nav_buttons)
+        
+    return InlineKeyboardMarkup(buttons)
+
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     data, user_id = callback_query.data, callback_query.from_user.id
     
+    if data == "noop": # নতুন সংযোজন: পেজ নম্বর বাটনের জন্য
+        await callback_query.answer()
+        return
+
     if data.startswith("showqual_"):
         movie_id = ObjectId(data.split("_", 1)[1])
         new_msg = await show_quality_options(callback_query.message, movie_id, is_edit=True, return_message=True)
@@ -172,6 +204,28 @@ async def callback_handler(client, callback_query):
         verification_url = f"{AD_PAGE_URL}?data={encoded_data}"
         await callback_query.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=verification_url)]]))
     
+    # <--- নতুন সংযোজন: পেজিনেশন নেভিগেশন হ্যান্ডেল করার জন্য --->
+    elif data.startswith("nav_"):
+        try:
+            _, page_str, query = data.split("_", 2)
+            current_page = int(page_str)
+            
+            search_pattern = '.*'.join(query.split())
+            search_regex = re.compile(search_pattern, re.IGNORECASE)
+
+            total_count = await movie_info_db.count_documents({'title_lower': search_regex})
+            results = await movie_info_db.find({'title_lower': search_regex}).skip(current_page * SEARCH_PAGE_SIZE).limit(SEARCH_PAGE_SIZE).to_list(length=SEARCH_PAGE_SIZE)
+            
+            if results:
+                markup = build_search_results_markup(results, query, current_page, total_count)
+                await callback_query.message.edit_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=markup)
+
+        except MessageNotModified:
+            pass # ব্যবহারকারী একই পেজ বাটনে ক্লিক করলে কিছু করার দরকার নেই
+        except Exception as e:
+            LOGGER.error(f"Navigation callback error: {e}")
+            await callback_query.answer("কিছু একটা সমস্যা হয়েছে।", show_alert=True)
+
     await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False, return_message=False):
@@ -206,13 +260,10 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
     except Exception as e: LOGGER.error(f"Show quality options error: {e}"); return None
 
 # ========= 🔎 চূড়ান্ত Regex সার্চ হ্যান্ডলার (গ্রুপে সাইলেন্ট, প্রাইভেটে রেসপন্সিভ) ========= #
-@app.on_message((filters.private | filters.group) & filters.text) # <<<--- ফিল্টারটি সহজ করা হয়েছে
+@app.on_message((filters.private | filters.group) & filters.text)
 async def reliable_search_handler(client, message):
-    # <<<--- ফাংশনের ভেতরে কমান্ড চেক করা হচ্ছে, এটি সবচেয়ে নির্ভরযোগ্য উপায় ---<<<
-    if message.text and message.text.startswith('/'):
-        return
-    if message.from_user.is_bot: 
-        return
+    if message.text and message.text.startswith('/'): return
+    if message.from_user.is_bot: return
 
     query = message.text.strip()
     cleaned_query = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', query.lower()))
@@ -225,34 +276,37 @@ async def reliable_search_handler(client, message):
     reply_msg = None
 
     try:
-        results = await movie_info_db.find({'title_lower': search_regex}).limit(10).to_list(length=10)
-        LOGGER.info(f"Search for '{cleaned_query}' in chat {message.chat.id} ({message.chat.type.name}) found {len(results)} results.")
+        # <--- পরিবর্তন: প্রথমে মোট সংখ্যা গণনা করা হচ্ছে, তারপর প্রথম পৃষ্ঠার জন্য রেজাল্ট আনা হচ্ছে --->
+        total_count = await movie_info_db.count_documents({'title_lower': search_regex})
+        LOGGER.info(f"Search for '{cleaned_query}' in chat {message.chat.id} ({message.chat.type.name}) found {total_count} total results.")
+        
+        if total_count == 0:
+            if message.chat.type == ChatType.PRIVATE:
+                reply_msg = await message.reply_text("❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\nঅনুগ্রহ করে নামের বানানটি পরীক্ষা করে আবার চেষ্টা করুন।", quote=True)
+                messages_to_delete.append(reply_msg)
+            # গ্রুপে কোনো রিপ্লাই দেওয়া হবে না
+            
+        elif total_count == 1:
+            movie = await movie_info_db.find_one({'title_lower': search_regex})
+            reply_msg = await show_quality_options(message, movie['_id'], return_message=True)
+            if reply_msg: messages_to_delete.append(reply_msg)
+        else:
+            # পেজ 0 (প্রথম পাতা) এর জন্য রেজাল্ট আনা হচ্ছে
+            results = await movie_info_db.find({'title_lower': search_regex}).limit(SEARCH_PAGE_SIZE).to_list(length=SEARCH_PAGE_SIZE)
+            markup = build_search_results_markup(results, cleaned_query, 0, total_count)
+            reply_msg = await message.reply_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=markup, quote=True)
+            messages_to_delete.append(reply_msg)
+
     except Exception as e:
-        LOGGER.error(f"Database find error: {e}")
+        LOGGER.error(f"Database search error: {e}")
         if message.chat.type == ChatType.PRIVATE:
             reply_msg = await message.reply_text("⚠️ বট একটি ডাটাবেস সমস্যার সম্মুখীন হয়েছে।")
             messages_to_delete.append(reply_msg)
-        asyncio.create_task(delete_messages_after_delay(messages_to_delete, 60))
-        return
-
-    if not results:
-        if message.chat.type == ChatType.PRIVATE:
-            reply_msg = await message.reply_text("❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\nঅনুগ্রহ করে নামের বানানটি পরীক্ষা করে আবার চেষ্টা করুন।", quote=True)
-            messages_to_delete.append(reply_msg)
-    elif len(results) == 1:
-        reply_msg = await show_quality_options(message, results[0]['_id'], return_message=True)
-        if reply_msg: messages_to_delete.append(reply_msg)
-    else:
-        buttons = []
-        for movie in results:
-            display_year = f"({movie['year']})" if movie.get('year') else ""
-            buttons.append([InlineKeyboardButton(f"🎬 {movie['title']} {display_year}", callback_data=f"showqual_{movie['_id']}")])
-        
-        reply_msg = await message.reply_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
-        messages_to_delete.append(reply_msg)
+        # গ্রুপে কোনো রিপ্লাই দেওয়া হবে না
     
-    if messages_to_delete:
-        asyncio.create_task(delete_messages_after_delay(messages_to_delete, DELETE_DELAY))
+    finally:
+        if messages_to_delete:
+            asyncio.create_task(delete_messages_after_delay(messages_to_delete, DELETE_DELAY))
 
 # ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
 def run_web_server():
@@ -263,6 +317,6 @@ if __name__ == "__main__":
     web_thread = Thread(target=run_web_server)
     web_thread.start()
     
-    LOGGER.info("The Don is waking up... (v4.6 Final Stable Version)")
+    LOGGER.info("The Don is waking up... (v4.7 Pagination Update)")
     app.run()
     LOGGER.info("The Don is resting...")
