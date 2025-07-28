@@ -1,9 +1,9 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v5.0 - Automatic & Multi-Ad Slot Edition)           ||
+# ||      GODFATHER MOVIE BOT (v5.1 - Final Hotfix Edition)                        ||
 # ||---------------------------------------------------------------------------------||
-# || এই সংস্করণে ৩টি বিজ্ঞাপন স্লট সহ একটি শক্তিশালী অ্যাডমিন প্যানেল রয়েছে।         ||
+# || এই সংস্করণে Pyrogram ফিল্টার সম্পর্কিত TypeError এরর সমাধান করা হয়েছে।         ||
+# || ৩টি বিজ্ঞাপন স্লট সহ একটি শক্তিশালী অ্যাডমিন প্যানেল রয়েছে।                      ||
 # || Secret Key ও ডিফল্ট অ্যাড কোড বট স্বয়ংক্রিয়ভাবে পরিচালনা করে।                   ||
-# || এটি একটি সম্পূর্ণ এবং চূড়ান্ত সংস্করণ।                                          ||
 # =====================================================================================
 
 import os
@@ -61,9 +61,7 @@ web_app = Flask(__name__)
 # ||          WEB APP (Verification & Multi-Ad Admin Panel)        ||
 # ===================================================================
 
-# --- বিজ্ঞাপন ও সিক্রেট কী পরিচালনার জন্য হেল্পার ফাংশন ---
 async def get_all_ad_codes():
-    """ডেটাবেস থেকে ৩টি বিজ্ঞাপনের কোড আনে, না পেলে ডিফল্ট বার্তা দেয়"""
     ad_codes = {}
     default_text = "<p>এই বিজ্ঞাপন স্লটটি অ্যাডমিন প্যানেল থেকে সেট করুন।</p>"
     for i in range(1, 4):
@@ -73,13 +71,11 @@ async def get_all_ad_codes():
     return ad_codes
 
 async def update_ad_codes(form_data):
-    """ডেটাবেসে ৩টি বিজ্ঞাপনের কোড সংরক্ষণ করে"""
     for i in range(1, 4):
         slot_id = f"ad_slot_{i}"
         await settings_db.update_one({"_id": slot_id}, {"$set": {"value": form_data.get(slot_id, "")}}, upsert=True)
 
 async def initialize_app_secrets():
-    """বট প্রথমবার চালু হলে সিক্রেট কী তৈরি ও সেভ করে"""
     secret_doc = await settings_db.find_one({"_id": "flask_secret_key"})
     if secret_doc:
         web_app.secret_key = secret_doc['value']
@@ -132,7 +128,7 @@ def logout():
     session.pop('logged_in', None)
     return redirect(url_for('admin_panel'))
 
-# ========= 📄 বাকি কোড অপরিবর্তিত... (Helper, Indexing, Commands, Callbacks, Search) ========= #
+# ========= 📄 হেল্পার ও ইনডেক্সিং হ্যান্ডলার ========= #
 def is_admin(_, __, message): return message.from_user and message.from_user.id in ADMIN_IDS
 admin_filter = filters.create(is_admin)
 
@@ -164,6 +160,7 @@ async def save_movie_handler(client, message):
     await files_db.update_one({"movie_id": movie_doc['_id'], "quality": quality, "language": language}, {"$set": {"file_id": file_info.file_id, "chat_id": message.chat.id, "msg_id": message.id}}, upsert=True)
     LOGGER.info(f"✅ Indexed: {clean_title} ({year or 'N/A'}) [{quality} - {language}]")
 
+# ========= 👮 অ্যাডমিন ও স্টার্ট কমান্ড ========= #
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
     total_users, total_movies, total_files = await asyncio.gather(users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({}))
@@ -195,6 +192,7 @@ async def start_handler(client, message):
         reply_msg = await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
         asyncio.create_task(delete_messages_after_delay([message, reply_msg], 120))
 
+# ========= 📞 কলব্যাক এবং পেজিনেশন ========= #
 def build_search_markup(results, query, page, total):
     buttons = [[InlineKeyboardButton(f"🎬 {m.get('title','N/A')} ({m.get('year','N/A')})", callback_data=f"qual_{m['_id']}")] for m in results]
     if total > SEARCH_PAGE_SIZE:
@@ -245,7 +243,13 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
     except MessageNotModified: return message if return_message else None
     except Exception as e: LOGGER.error(f"Show quality options error: {e}"); return None
 
-@app.on_message((filters.private | filters.group) & filters.text & ~filters.command & ~filters.bot)
+# ========= 🔎 চূড়ান্ত সার্চ হ্যান্ডলার (এরর ফিক্সড) ========= #
+@app.on_message(
+    (filters.private | filters.group) &
+    filters.text &
+    ~filters.command &
+    filters.create(lambda _, __, msg: not msg.from_user.is_bot if msg.from_user else True)
+)
 async def search_handler(client, message):
     query = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', message.text.lower()))
     if not query: return
@@ -282,9 +286,10 @@ async def main():
     web_thread.start()
     LOGGER.info("Web server started on a separate thread.")
     
-    LOGGER.info("The Don is waking up... (v5.0 - Final Edition)")
+    LOGGER.info("The Don is waking up... (v5.1 - Final Hotfix Edition)")
     await app.start()
-    await asyncio.Future() # Keep the bot running
+    LOGGER.info("Bot has started successfully.")
+    await asyncio.Event().wait() # Keep the bot running indefinitely
 
 if __name__ == "__main__":
     try:
