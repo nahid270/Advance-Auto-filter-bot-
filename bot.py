@@ -1,8 +1,8 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v7.0 - Final Clean Slate)                           ||
+# ||      GODFATHER MOVIE BOT (v4.7+ Admin Panel & Self-Hosted Ads)                ||
 # ||---------------------------------------------------------------------------------||
-# || এটি একটি সম্পূর্ণ নতুন এবং পরিষ্কার কোড যা আপনার সকল সমস্যা সমাধান করবে।          ||
-# || এতে অ্যাডমিন প্যানেল, একাধিক বিজ্ঞাপন এবং সব ধরনের এরর ফিক্স অন্তর্ভুক্ত।         ||
+# || এটি আপনার v4.7 কোডের উপর ভিত্তি করে একটি আপগ্রেডেড সংস্করণ।                     ||
+# || এতে বিল্ট-ইন অ্যাডমিন প্যানেল এবং সেলফ-হোস্টেড বিজ্ঞাপন পেজ যুক্ত করা হয়েছে।       ||
 # =====================================================================================
 
 import os
@@ -35,7 +35,8 @@ try:
     MONGO_URL = os.environ.get("MONGO_URL")
     BOT_PUBLIC_URL = os.environ.get("BOT_PUBLIC_URL")
     BOT_USERNAME = os.environ.get("BOT_USERNAME")
-    FILE_CHANNEL_ID = int(os.environ.get("FILE_CHANNEL_ID"))
+    # --->>> আপনার v4.7 কোড থেকে FILE_CHANNEL_ID সরাসরি কোডেই রাখা হলো <<<---
+    FILE_CHANNEL_ID = -1002744890741
     ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(',') if id.strip()]
     ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
     PORT = int(os.environ.get("PORT", 8080))
@@ -45,45 +46,37 @@ except (ValueError, TypeError, AttributeError) as e:
     LOGGER.critical(f"Configuration error in environment variables: {e}")
     exit()
 
-if not all([BOT_PUBLIC_URL, BOT_USERNAME, ADMIN_PASSWORD, FILE_CHANNEL_ID]):
-    LOGGER.critical("CRITICAL: Ensure all required environment variables are set correctly in Render.")
+if not all([BOT_PUBLIC_URL, BOT_USERNAME, ADMIN_PASSWORD]):
+    LOGGER.critical("CRITICAL: Ensure BOT_PUBLIC_URL, BOT_USERNAME, ADMIN_PASSWORD are set.")
     exit()
 
 # --- ক্লায়েন্ট, ডাটাবেস ও ওয়েব অ্যাপ ---
 app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client["MovieDB_v7"]
+db = mongo_client["MovieDB_v4_7_plus"]
 movie_info_db, files_db, users_db, settings_db = db["movie_info"], db["files"], db["users"], db["settings"]
 web_app = Flask(__name__)
 
 # ===================================================================
-# ||          WEB APP (Verification & Multi-Ad Admin Panel)        ||
+# ||          WEB APP (Verification & Admin Panel)                 ||
 # ===================================================================
-async def get_all_ad_codes():
-    ad_codes = {}
-    default_text = "<p>This ad slot is not configured. Please set it from the admin panel.</p>"
-    for i in range(1, 4):
-        slot_id = f"ad_slot_{i}"
-        ad_doc = await settings_db.find_one({"_id": slot_id})
-        ad_codes[slot_id] = ad_doc['value'] if ad_doc else default_text
-    return ad_codes
+async def get_ad_code():
+    ad_doc = await settings_db.find_one({"_id": "ad_code"})
+    return ad_doc['value'] if ad_doc else "<p>বিজ্ঞাপন স্লটটি অ্যাডমিন প্যানেল থেকে সেট করুন।</p>"
 
-async def update_ad_codes(form_data):
-    for i in range(1, 4):
-        slot_id = f"ad_slot_{i}"
-        await settings_db.update_one({"_id": slot_id}, {"$set": {"value": form_data.get(slot_id, "")}}, upsert=True)
+async def update_ad_code(new_code):
+    await settings_db.update_one({"_id": "ad_code"}, {"$set": {"value": new_code}}, upsert=True)
 
 async def initialize_app_secrets():
     secret_doc = await settings_db.find_one({"_id": "flask_secret_key"})
     if secret_doc: web_app.secret_key = secret_doc['value']
     else:
-        new_secret = secrets.token_hex(24)
-        await settings_db.insert_one({"_id": "flask_secret_key", "value": new_secret})
+        new_secret = secrets.token_hex(24); await settings_db.insert_one({"_id": "flask_secret_key", "value": new_secret})
         web_app.secret_key = new_secret
     LOGGER.info("Flask Secret Key initialized.")
 
-VERIFY_PAGE_TEMPLATE = """<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Verification Required</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;display:flex;flex-direction:column;align-items:center;background-color:#f0f2f5;margin:0;padding:20px;box-sizing:border-box}h1,p{text-align:center}.ad-container-top{width:100%;margin-bottom:20px;text-align:center}.container{background:white;padding:20px 40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.1);max-width:500px;width:100%;text-align:center}h1{color:#1c1e21}p{color:#606770}.timer{font-size:2em;font-weight:700;color:#007bff;margin:20px 0}.button{background-color:#ccc;color:#fff;padding:15px 30px;border:none;border-radius:8px;font-size:1.1em;cursor:not-allowed;text-decoration:none;display:inline-block}.button.enabled{background-color:#28a745;cursor:pointer}.ad-container-bottom{width:100%;margin-top:20px;text-align:center}</style></head><body><div class="ad-container-top">{{ ad_slot_1|safe }}</div><div class="container"><h1>অনুগ্রহ করে যাচাই করুন</h1><p>আপনার ফাইলটি কিছুক্ষণের মধ্যেই প্রস্তুত হয়ে যাবে।</p>{{ ad_slot_2|safe }}<p>টাইমার শেষ হওয়ার জন্য অপেক্ষা করুন।</p><div id="timer" class="timer">10</div><a id="download-btn" href="#" class="button">লিঙ্ক তৈরি হচ্ছে...</a></div><div class="ad-container-bottom">{{ ad_slot_3|safe }}</div><script>const timerElement=document.getElementById("timer"),downloadBtn=document.getElementById("download-btn"),encodedData="{{ encoded_data }}",botUsername="{{ bot_username }}";let countdown=10;const interval=setInterval(()=>{countdown--,timerElement.textContent=countdown,countdown<=0&&(clearInterval(interval),timerElement.style.display="none",downloadBtn.href=`https://t.me/${botUsername}?start=${encodedData}`,downloadBtn.textContent="ফাইল পেতে এখানে ক্লিক করুন",downloadBtn.classList.add("enabled"))},1e3)</script></body></html>"""
-ADMIN_PANEL_TEMPLATE = """<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><title>অ্যাডমিন প্যানেল</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:sans-serif;background:#f4f4f4;margin:20px}h1,h2{text-align:center;color:#333}.container{max-width:900px;margin:auto;background:white;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:15px;text-align:center;margin-bottom:30px}.stat-box{background:#e9ecef;padding:20px;border-radius:5px}.stat-box h3{margin:0 0 10px}.ad-form-grid{display:grid;grid-template-columns:1fr;gap:20px}label{font-weight:700;margin-bottom:5px;display:block}textarea{width:100%;height:150px;padding:10px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;font-family:monospace;font-size:14px}button{background:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px;margin-top:10px}button:hover{background:#0056b3}.logout,h1{margin-bottom:20px}.logout{text-align:right}.message{padding:15px;margin-bottom:20px;border-radius:4px;text-align:center}.success{background:#d4edda;color:#155724}.error{background:#f8d7da;color:#721c24}</style></head><body><div class="container">{% if session.get('logged_in') %}<div class="logout"><a href="{{ url_for('logout') }}">লগআউট</a></div><h1>গডফাদার বট - অ্যাডমিন প্যানেল</h1>{% with messages=get_flashed_messages(with_categories=true) %}{% if messages %}{% for category,message in messages %}<div class="message {{ category }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<h2>বটের পরিসংখ্যান</h2><div class="stats-grid"><div class="stat-box"><h3>মোট ব্যবহারকারী</h3><p>{{ stats.users }}</p></div><div class="stat-box"><h3>মোট মুভি</h3><p>{{ stats.movies }}</p></div><div class="stat-box"><h3>মোট ফাইল</h3><p>{{ stats.files }}</p></div></div><h2>বিজ্ঞাপন কোড আপডেট করুন</h2><form method="post" action="{{ url_for('admin_panel') }}"><div class="ad-form-grid"><div class="ad-slot"><label for="ad_slot_1">বিজ্ঞাপন স্লট ১ (পেজের উপরে)</label><textarea id="ad_slot_1" name="ad_slot_1">{{ ad_codes.ad_slot_1 }}</textarea></div><div class="ad-slot"><label for="ad_slot_2">বিজ্ঞাপন স্লট ২ (টাইমারের পাশে)</label><textarea id="ad_slot_2" name="ad_slot_2">{{ ad_codes.ad_slot_2 }}</textarea></div><div class="ad-slot"><label for="ad_slot_3">বিজ্ঞাপন স্লট ৩ (পেজের নিচে)</label><textarea id="ad_slot_3" name="ad_slot_3">{{ ad_codes.ad_slot_3 }}</textarea></div></div><button type="submit">সকল বিজ্ঞাপন সেভ করুন</button></form>{% else %}<h1>অ্যাডমিন লগইন</h1>{% if error %}<p class="message error">{{ error }}</p>{% endif %}<form method="post" action="{{ url_for('admin_panel') }}"><label for="password">পাসওয়ার্ড:</label><input type="password" id="password" name="password" required style="width:100%;padding:10px;margin-bottom:20px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box"><button type="submit">লগইন</button></form>{% endif %}</div></body></html>"""
+VERIFY_PAGE_TEMPLATE = """<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Verification Required</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background-color:#f0f2f5;margin:0;padding:20px;box-sizing:border-box} .container{background:white;padding:20px 40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.1);max-width:500px;width:100%;text-align:center} h1{color:#1c1e21} p{color:#606770}.timer{font-size:2em;font-weight:700;color:#007bff;margin:20px 0}.button{background-color:#ccc;color:#fff;padding:15px 30px;border:none;border-radius:8px;font-size:1.1em;cursor:not-allowed;text-decoration:none;display:inline-block}.button.enabled{background-color:#28a745;cursor:pointer}</style></head><body><div class="container"><h1>অনুগ্রহ করে যাচাই করুন</h1><p>আপনার ফাইলটি কিছুক্ষণের মধ্যেই প্রস্তুত হয়ে যাবে।</p>{{ ad_code|safe }}<p>টাইমার শেষ হওয়ার জন্য অপেক্ষা করুন।</p><div id="timer" class="timer">10</div><a id="download-btn" href="#" class="button">লিঙ্ক তৈরি হচ্ছে...</a></div><script>const t=document.getElementById("timer"),d=document.getElementById("download-btn"),e="{{ encoded_data }}",o="{{ bot_username }}";let n=10;const i=setInterval(()=>{n--,t.textContent=n,n<=0&&(clearInterval(i),t.style.display="none",d.href=`https://t.me/${o}?start=${e}`,d.textContent="ফাইল পেতে এখানে ক্লিক করুন",d.classList.add("enabled"))},1e3)</script></body></html>"""
+ADMIN_PANEL_TEMPLATE = """<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><title>অ্যাডমিন প্যানেল</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:sans-serif;background:#f4f4f4;margin:20px}h1,h2{text-align:center;color:#333}.container{max-width:900px;margin:auto;background:white;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}label{font-weight:700;margin-bottom:5px;display:block}textarea{width:100%;height:250px;padding:10px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;font-family:monospace;font-size:14px}button{background:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px;margin-top:10px}button:hover{background:#0056b3}.logout{text-align:right;margin-bottom:20px}.message{padding:15px;margin-bottom:20px;border-radius:4px;text-align:center}.success{background:#d4edda;color:#155724}.error{background:#f8d7da;color:#721c24}</style></head><body><div class="container">{% if session.get('logged_in') %}<div class="logout"><a href="{{ url_for('logout') }}">লগআউট</a></div><h1>অ্যাডমিন প্যানেল</h1>{% with messages=get_flashed_messages(with_categories=true) %}{% if messages %}{% for category,message in messages %}<div class="message {{ category }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<h2>বিজ্ঞাপন কোড আপডেট করুন</h2><form method="post" action="{{ url_for('admin_panel') }}"><label for="ad_code">বিজ্ঞাপন HTML কোড:</label><textarea id="ad_code" name="ad_code">{{ ad_code }}</textarea><button type="submit">সেভ করুন</button></form>{% else %}<h1>অ্যাডমিন লগইন</h1>{% if error %}<p class="message error">{{ error }}</p>{% endif %}<form method="post" action="{{ url_for('admin_panel') }}"><label for="password">পাসওয়ার্ড:</label><input type="password" id="password" name="password" required style="width:100%;padding:10px;margin-bottom:20px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box"><button type="submit">লগইন</button></form>{% endif %}</div></body></html>"""
 
 @web_app.route('/')
 def health_check(): return "Bot is alive and running!"
@@ -92,8 +85,8 @@ def health_check(): return "Bot is alive and running!"
 async def verify_user():
     encoded_data = request.args.get('data')
     if not encoded_data: return "Error: No data provided.", 400
-    ad_codes = await get_all_ad_codes()
-    return render_template_string(VERIFY_PAGE_TEMPLATE, **ad_codes, encoded_data=encoded_data, bot_username=BOT_USERNAME)
+    current_ad_code = await get_ad_code()
+    return render_template_string(VERIFY_PAGE_TEMPLATE, ad_code=current_ad_code, encoded_data=encoded_data, bot_username=BOT_USERNAME)
 
 @web_app.route('/admin', methods=['GET', 'POST'])
 async def admin_panel():
@@ -103,37 +96,41 @@ async def admin_panel():
             if request.form['password'] == ADMIN_PASSWORD:
                 session['logged_in'] = True; return redirect(url_for('admin_panel'))
             else: error = 'ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।'
-        elif 'ad_slot_1' in request.form and session.get('logged_in'):
-            await update_ad_codes(request.form)
+        elif 'ad_code' in request.form and session.get('logged_in'):
+            await update_ad_code(request.form['ad_code'])
             flash('বিজ্ঞাপন কোড সফলভাবে আপডেট করা হয়েছে!', 'success'); return redirect(url_for('admin_panel'))
     if session.get('logged_in'):
-        stats_task = asyncio.gather(users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({}))
-        ad_codes = await get_all_ad_codes()
-        total_users, total_movies, total_files = await stats_task
-        stats = {'users': total_users, 'movies': total_movies, 'files': total_files}
-        return render_template_string(ADMIN_PANEL_TEMPLATE, stats=stats, ad_codes=ad_codes)
+        current_ad_code = await get_ad_code()
+        return render_template_string(ADMIN_PANEL_TEMPLATE, ad_code=current_ad_code)
     return render_template_string(ADMIN_PANEL_TEMPLATE, error=error)
 
 @web_app.route('/logout')
 def logout():
     session.pop('logged_in', None); return redirect(url_for('admin_panel'))
 
-def is_admin(_, __, message): return message.from_user and message.from_user.id in ADMIN_IDS
+# ========= 📄 হেল্পার ফাংশন (আপনার v4.7 থেকে) ========= #
+def is_admin(_, __, message):
+    return message.from_user and message.from_user.id in ADMIN_IDS
 admin_filter = filters.create(is_admin)
 
-async def delete_messages_after_delay(messages, delay):
+async def delete_messages_after_delay(messages_to_delete, delay):
     await asyncio.sleep(delay)
-    for msg in messages:
+    for msg in messages_to_delete:
         try:
             if msg: await msg.delete()
         except Exception: pass
 
+# ========= 📢 নমনীয় ইনডেক্সিং হ্যান্ডলার (আপনার v4.7 থেকে) ========= #
 @app.on_message(filters.channel & (filters.video | filters.document) & filters.chat(FILE_CHANNEL_ID))
 async def flexible_save_movie_quality(client, message):
     caption = message.caption or ""
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption, re.IGNORECASE)
-    year = title_match.group(2) if title_match else None
-    raw_title = title_match.group(1).strip() if title_match else ' '.join(caption.split('(')[0].split('[')[0].split())
+    year = None
+    if title_match: raw_title, year = title_match.group(1).strip(), title_match.group(2)
+    else:
+        stop_words = ['480p','720p','1080p','2160p','4k','hindi','english','bangla','bengali','dual','audio','web-dl','hdrip','bluray','webrip']
+        title_words = [word for word in caption.split() if not any(stop in word.lower() for stop in stop_words)]
+        raw_title = ' '.join(title_words).strip()
     if not raw_title: LOGGER.warning(f"Could not parse title from: '{caption}'"); return
     clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
     quality = next((q for q in ["480p","720p","1080p","2160p","4k"] if q in caption.lower()), "Unknown")
@@ -146,11 +143,13 @@ async def flexible_save_movie_quality(client, message):
     await files_db.update_one({"movie_id": movie_doc['_id'], "quality": quality, "language": language}, {"$set": {"file_id": file_info.file_id, "chat_id": message.chat.id, "msg_id": message.id}}, upsert=True)
     LOGGER.info(f"✅ Indexed: {clean_title} ({year or 'N/A'}) [{quality} - {language}]")
 
+# ========= 👮 অ্যাডমিন কমান্ড (আপনার v4.7 থেকে) ========= #
 @app.on_message(filters.command("stats") & admin_filter)
 async def stats_command(client, message):
     total_users, total_movies, total_files = await asyncio.gather(users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({}))
-    await message.reply_text(f"📊 **Bot Stats**\n\n👥 Users: `{total_users}`\n🎬 Movies: `{total_movies}`\n📁 Files: `{total_files}`\n\n📢 **Admin Panel:** {BOT_PUBLIC_URL}/admin")
+    await message.reply_text(f"📊 **Bot Stats**\n\n👥 Users: `{total_users}`\n🎬 Movies: `{total_movies}`\n📁 Files: `{total_files}`\n📢 **Admin Panel:** {BOT_PUBLIC_URL}/admin")
 
+# ========= 🤖 স্টার্ট এবং কলব্যাক হ্যান্ডলার (আপনার v4.7 থেকে, কিন্তু আপগ্রেডেড) ========= #
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
     user_id = message.from_user.id
@@ -180,8 +179,7 @@ async def start_handler(client, message):
 def build_search_results_markup(results, query, page, total):
     buttons = [[InlineKeyboardButton(f"🎬 {m.get('title','N/A')} ({m.get('year','N/A')})", callback_data=f"showqual_{m['_id']}")] for m in results]
     if total > SEARCH_PAGE_SIZE:
-        nav = []
-        total_pages = math.ceil(total / SEARCH_PAGE_SIZE)
+        nav = []; total_pages = math.ceil(total / SEARCH_PAGE_SIZE)
         if page > 0: nav.append(InlineKeyboardButton("⬅️", callback_data=f"nav_{page-1}_{query}"))
         nav.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
         if (page + 1) * SEARCH_PAGE_SIZE < total: nav.append(InlineKeyboardButton("➡️", callback_data=f"nav_{page+1}_{query}"))
@@ -198,7 +196,6 @@ async def callback_handler(client, callback_query):
             if msg: asyncio.create_task(delete_messages_after_delay([msg], DELETE_DELAY))
         elif data.startswith("getfile_"):
             encoded_data = base64.urlsafe_b64encode(f'file_{data.split("_",1)[1]}_{user_id}'.encode()).decode()
-            # --->>> চূড়ান্ত সমাধান: এখানে শুধুমাত্র BOT_PUBLIC_URL ব্যবহৃত হচ্ছে <<<---
             verification_url = f"{BOT_PUBLIC_URL}/verify?data={encoded_data}"
             await callback_query.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=verification_url)]]))
         elif data.startswith("nav_"):
@@ -217,8 +214,7 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
         files = await files_db.find({"movie_id": movie_id}).sort("quality").to_list(length=None)
         movie = await movie_info_db.find_one({"_id": movie_id})
         if not files or not movie:
-            text = "দুঃখিত, এই মুভির জন্য কোনো ফাইল বা তথ্য পাওয়া যায়নি।"
-            return await (message.edit_text(text) if is_edit else message.reply_text(text)) if return_message else None
+            text = "দুঃখিত, এই মুভির জন্য কোনো ফাইল বা তথ্য পাওয়া যায়নি।"; return await (message.edit_text(text) if is_edit else message.reply_text(text)) if return_message else None
         text = f"🎬 **{movie.get('title','N/A')} ({movie.get('year','N/A')})**\n\n👇 আপনার পছন্দের কোয়ালিটি বেছে নিন:"
         buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
         markup = InlineKeyboardMarkup(buttons)
@@ -227,6 +223,7 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
     except MessageNotModified: return message if return_message else None
     except Exception as e: LOGGER.error(f"Show quality options error: {e}"); return None
 
+# ========= 🔎 চূড়ান্ত Regex সার্চ হ্যান্ডলার (আপনার v4.7 থেকে) ========= #
 @app.on_message(
     (filters.private | filters.group) &
     filters.text &
@@ -237,8 +234,7 @@ async def reliable_search_handler(client, message):
     query = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', message.text.lower()))
     if not query: return
     regex = re.compile('.*'.join(query.split()), re.IGNORECASE)
-    messages_to_delete = [message]
-    reply_msg = None
+    messages_to_delete = [message]; reply_msg = None
     try:
         total = await movie_info_db.count_documents({'title_lower': regex})
         LOGGER.info(f"Search for '{query}' in chat {message.chat.id} ({message.chat.type.name}) found {total} results.")
@@ -261,21 +257,27 @@ async def reliable_search_handler(client, message):
     finally:
         if messages_to_delete: asyncio.create_task(delete_messages_after_delay(messages_to_delete, DELETE_DELAY))
 
-# ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা ========= #
+# ========= ▶️ বট এবং ওয়েব সার্ভার চালু করা (সঠিক পদ্ধতি) ========= #
+def run_flask_app():
+    # Flask অ্যাপটি একটি আলাদা থ্রেডে চালু হবে
+    web_app.run(host='0.0.0.0', port=PORT)
+
 async def main():
     await initialize_app_secrets()
-    web_thread = Thread(target=lambda: web_app.run(host='0.0.0.0', port=PORT))
+    
+    web_thread = Thread(target=run_flask_app)
     web_thread.daemon = True
     web_thread.start()
     LOGGER.info("Web server started successfully.")
     
-    LOGGER.info("The Don is waking up... (v7.0 - Final Clean Slate)")
+    LOGGER.info("The Don is waking up... (v4.7+ Final)")
     await app.start()
-    LOGGER.info("Bot has started successfully and is now running.")
+    me = await app.get_me()
+    LOGGER.info(f"Bot started as @{me.username}. Listening for updates...")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        LOGGER.info("The Don is resting...")
+    except (KeyboardInterrupt, SystemExit):
+        LOGGER.info("The Don is resting... Bot shutting down.")
