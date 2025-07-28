@@ -1,8 +1,8 @@
 # =====================================================================================
-# ||      GODFATHER MOVIE BOT (v5.2 - Final Filter Hotfix)                         ||
+# ||      GODFATHER MOVIE BOT (v6.0 - Final Integrated Version)                    ||
 # ||---------------------------------------------------------------------------------||
-# || এই সংস্করণে সব ধরনের TypeError (filter-related) সমাধান করা হয়েছে।             ||
-# || এটি একটি সম্পূর্ণ, স্থিতিশীল এবং চূড়ান্ত সংস্করণ।                                ||
+# || এটি আপনার v4.7 কোডের উপর ভিত্তি করে তৈরি একটি চূড়ান্ত এবং স্থিতিশীল সংস্করণ।     ||
+# || এতে রয়েছে ৩টি বিজ্ঞাপন স্লট সহ অ্যাডমিন প্যানেল এবং সব ধরনের এরর ফিক্স।         ||
 # =====================================================================================
 
 import os
@@ -46,13 +46,13 @@ except (ValueError, TypeError, AttributeError) as e:
     exit()
 
 if not all([BOT_PUBLIC_URL, BOT_USERNAME, ADMIN_PASSWORD, FILE_CHANNEL_ID]):
-    LOGGER.critical("CRITICAL: Ensure required environment variables are set.")
+    LOGGER.critical("CRITICAL: Ensure required environment variables are set in your .env file.")
     exit()
 
 # --- ক্লায়েন্ট, ডাটাবেস ও ওয়েব অ্যাপ ---
 app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client["MovieDB_v5"]
+db = mongo_client["MovieDB_v6"]
 movie_info_db, files_db, users_db, settings_db = db["movie_info"], db["files"], db["users"], db["settings"]
 web_app = Flask(__name__)
 
@@ -101,13 +101,11 @@ async def admin_panel():
     if request.method == 'POST':
         if 'password' in request.form:
             if request.form['password'] == ADMIN_PASSWORD:
-                session['logged_in'] = True
-                return redirect(url_for('admin_panel'))
+                session['logged_in'] = True; return redirect(url_for('admin_panel'))
             else: error = 'ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।'
         elif 'ad_slot_1' in request.form and session.get('logged_in'):
             await update_ad_codes(request.form)
-            flash('বিজ্ঞাপন কোড সফলভাবে আপডেট করা হয়েছে!', 'success')
-            return redirect(url_for('admin_panel'))
+            flash('বিজ্ঞাপন কোড সফলভাবে আপডেট করা হয়েছে!', 'success'); return redirect(url_for('admin_panel'))
     if session.get('logged_in'):
         stats_task = asyncio.gather(users_db.count_documents({}), movie_info_db.count_documents({}), files_db.count_documents({}))
         ad_codes = await get_all_ad_codes()
@@ -118,9 +116,9 @@ async def admin_panel():
 
 @web_app.route('/logout')
 def logout():
-    session.pop('logged_in', None)
-    return redirect(url_for('admin_panel'))
+    session.pop('logged_in', None); return redirect(url_for('admin_panel'))
 
+# ========= 📄 হেল্পার ও ইনডেক্সিং হ্যান্ডলার ========= #
 def is_admin(_, __, message): return message.from_user and message.from_user.id in ADMIN_IDS
 admin_filter = filters.create(is_admin)
 
@@ -132,11 +130,16 @@ async def delete_messages_after_delay(messages, delay):
         except Exception: pass
 
 @app.on_message(filters.channel & (filters.video | filters.document) & filters.chat(FILE_CHANNEL_ID))
-async def save_movie_handler(client, message):
+async def flexible_save_movie_quality(client, message):
     caption = message.caption or ""
     title_match = re.search(r"(.+?)\s*\(?(\d{4})\)?", caption, re.IGNORECASE)
-    year = title_match.group(2) if title_match else None
-    raw_title = title_match.group(1).strip() if title_match else ' '.join(caption.split('(')[0].split('[')[0].split())
+    year = None
+    if title_match:
+        raw_title, year = title_match.group(1).strip(), title_match.group(2)
+    else:
+        stop_words = ['480p','720p','1080p','2160p','4k','hindi','english','bangla','bengali','dual','audio','web-dl','hdrip','bluray','webrip']
+        title_words = [word for word in caption.split() if not any(stop in word.lower() for stop in stop_words)]
+        raw_title = ' '.join(title_words).strip()
     if not raw_title: LOGGER.warning(f"Could not parse title from: '{caption}'"); return
     clean_title = re.sub(r'[\.\_]', ' ', raw_title).strip()
     quality = next((q for q in ["480p","720p","1080p","2160p","4k"] if q in caption.lower()), "Unknown")
@@ -180,8 +183,8 @@ async def start_handler(client, message):
         reply_msg = await message.reply_text(f"👋 Hello, **{message.from_user.first_name}**!\nSend me a movie or series name to search.")
         asyncio.create_task(delete_messages_after_delay([message, reply_msg], 120))
 
-def build_search_markup(results, query, page, total):
-    buttons = [[InlineKeyboardButton(f"🎬 {m.get('title','N/A')} ({m.get('year','N/A')})", callback_data=f"qual_{m['_id']}")] for m in results]
+def build_search_results_markup(results, query, page, total):
+    buttons = [[InlineKeyboardButton(f"🎬 {m.get('title','N/A')} ({m.get('year','N/A')})", callback_data=f"showqual_{m['_id']}")] for m in results]
     if total > SEARCH_PAGE_SIZE:
         nav = []
         total_pages = math.ceil(total / SEARCH_PAGE_SIZE)
@@ -192,28 +195,27 @@ def build_search_markup(results, query, page, total):
     return InlineKeyboardMarkup(buttons)
 
 @app.on_callback_query()
-async def callback_handler(client, cb):
-    data, user_id = cb.data, cb.from_user.id
+async def callback_handler(client, callback_query):
+    data, user_id = callback_query.data, callback_query.from_user.id
     try:
-        if data == "noop": await cb.answer(); return
-        if data.startswith("qual_"):
-            msg = await show_quality_options(cb.message, ObjectId(data.split("_", 1)[1]), is_edit=True, return_message=True)
+        if data == "noop": await callback_query.answer(); return
+        if data.startswith("showqual_"):
+            msg = await show_quality_options(callback_query.message, ObjectId(data.split("_", 1)[1]), is_edit=True, return_message=True)
             if msg: asyncio.create_task(delete_messages_after_delay([msg], DELETE_DELAY))
-        elif data.startswith("file_"):
+        elif data.startswith("getfile_"):
             encoded = base64.urlsafe_b64encode(f'file_{data.split("_",1)[1]}_{user_id}'.encode()).decode()
             url = f"{BOT_PUBLIC_URL}/verify?data={encoded}"
-            await cb.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=url)]]))
+            await callback_query.message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("✅ ভেরিফাই করে ডাউনলোড করুন", url=url)]]))
         elif data.startswith("nav_"):
-            _, page, query = data.split("_", 2)
-            page = int(page)
+            _, page, query = data.split("_", 2); page = int(page)
             regex = re.compile('.*'.join(query.split()), re.IGNORECASE)
             total = await movie_info_db.count_documents({'title_lower': regex})
-            results = await movie_info_db.find({'title_lower': regex}).skip(page * SEARCH_PAGE_SIZE).limit(SEARCH_PAGE_SIZE).to_list(length=SEARCH_PAGE_SIZE)
-            if results: await cb.message.edit_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=build_search_markup(results, query, page, total))
+            results = await movie_info_db.find({'title_lower': regex}).skip(page*SEARCH_PAGE_SIZE).limit(SEARCH_PAGE_SIZE).to_list(length=SEARCH_PAGE_SIZE)
+            if results: await callback_query.message.edit_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=build_search_results_markup(results, query, page, total))
     except MessageNotModified: pass
     except Exception as e:
-        LOGGER.error(f"Callback error: {e}"); await cb.answer("কিছু একটা সমস্যা হয়েছে।", show_alert=True)
-    finally: await cb.answer()
+        LOGGER.error(f"Callback error: {e}"); await callback_query.answer("কিছু একটা সমস্যা হয়েছে।", show_alert=True)
+    finally: await callback_query.answer()
 
 async def show_quality_options(message, movie_id, is_edit=False, return_message=False):
     try:
@@ -223,7 +225,7 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
             text = "দুঃখিত, এই মুভির জন্য কোনো ফাইল বা তথ্য পাওয়া যায়নি।"
             return await (message.edit_text(text) if is_edit else message.reply_text(text)) if return_message else None
         text = f"🎬 **{movie.get('title','N/A')} ({movie.get('year','N/A')})**\n\n👇 আপনার পছন্দের কোয়ালিটি বেছে নিন:"
-        buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"file_{f['_id']}")] for f in files]
+        buttons = [[InlineKeyboardButton(f"✨ {f['quality']} | 🌐 {f['language']}", callback_data=f"getfile_{f['_id']}")] for f in files]
         markup = InlineKeyboardMarkup(buttons)
         reply_msg = await message.edit_text(text, reply_markup=markup) if is_edit else await message.reply_text(text, reply_markup=markup, quote=True)
         return reply_msg if return_message else None
@@ -237,7 +239,7 @@ async def show_quality_options(message, movie_id, is_edit=False, return_message=
     filters.create(lambda _, __, msg: msg.text and not msg.text.startswith('/')) &
     filters.create(lambda _, __, msg: not msg.from_user.is_bot if msg.from_user else True)
 )
-async def search_handler(client, message):
+async def reliable_search_handler(client, message):
     query = ' '.join(re.findall(r'\b[a-zA-Z0-9]+\b', message.text.lower()))
     if not query: return
     regex = re.compile('.*'.join(query.split()), re.IGNORECASE)
@@ -245,16 +247,16 @@ async def search_handler(client, message):
     reply_msg = None
     try:
         total = await movie_info_db.count_documents({'title_lower': regex})
-        LOGGER.info(f"Search for '{query}' in chat {message.chat.id} found {total} results.")
+        LOGGER.info(f"Search for '{query}' in chat {message.chat.id} ({message.chat.type.name}) found {total} results.")
         if total == 0:
             if message.chat.type == ChatType.PRIVATE:
-                reply_msg = await message.reply_text("❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\nঅনুগ্রহ করে নামের বানানটি পরীক্ষা করুন।", quote=True)
+                reply_msg = await message.reply_text("❌ **মুভিটি খুঁজে পাওয়া যায়নি!**\n\nঅনুগ্রহ করে নামের বানানটি পরীক্ষা করে আবার চেষ্টা করুন।", quote=True)
         elif total == 1:
             movie = await movie_info_db.find_one({'title_lower': regex})
             reply_msg = await show_quality_options(message, movie['_id'], return_message=True)
         else:
             results = await movie_info_db.find({'title_lower': regex}).limit(SEARCH_PAGE_SIZE).to_list(length=SEARCH_PAGE_SIZE)
-            markup = build_search_markup(results, query, 0, total)
+            markup = build_search_results_markup(results, query, 0, total)
             reply_msg = await message.reply_text("🤔 আপনি কি এগুলোর মধ্যে কোনো একটি খুঁজছেন?", reply_markup=markup, quote=True)
         if reply_msg: messages_to_delete.append(reply_msg)
     except Exception as e:
@@ -271,9 +273,9 @@ async def main():
     web_thread = Thread(target=lambda: web_app.run(host='0.0.0.0', port=PORT))
     web_thread.daemon = True
     web_thread.start()
-    LOGGER.info("Web server started on a separate thread.")
+    LOGGER.info("Web server started successfully.")
     
-    LOGGER.info("The Don is waking up... (v5.2 - Final Filter Hotfix)")
+    LOGGER.info("The Don is waking up... (v6.0 - Final Integrated Version)")
     await app.start()
     LOGGER.info("Bot has started successfully.")
     await asyncio.Event().wait()
